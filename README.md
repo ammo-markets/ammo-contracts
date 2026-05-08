@@ -1,4 +1,4 @@
-# Ammo Exchange — Smart Contracts
+# Ammo Markets — Smart Contracts
 
 DeFi protocol for tokenized ammunition trading on Avalanche C-Chain. Users deposit USDC to mint per-caliber ammo tokens (e.g., 9mm Practice, 5.56 NATO) at oracle prices, and redeem tokens back through a keeper-finalized flow. The protocol includes fee-on-transfer taxes for DEX trades, Chainlink-powered price feeds, and a capped emission system for LP farming incentives.
 
