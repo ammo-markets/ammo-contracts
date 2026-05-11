@@ -117,6 +117,37 @@ contract AmmoManagerTest is Test {
         manager.setTreasury(alice);
     }
 
+    // ── Market mint caps ────────────────────────────
+
+    function testSetMarketDailyMintCap() public {
+        assertEq(manager.marketDailyMintCapUsdc(alice), 0);
+
+        manager.setMarketDailyMintCap(alice, 50_000e6);
+
+        assertEq(manager.marketDailyMintCapUsdc(alice), 50_000e6);
+    }
+
+    function testSetMarketDailyMintCapRevertsForNonOwner() public {
+        vm.prank(alice);
+        vm.expectRevert(AmmoManager.NotOwner.selector);
+        manager.setMarketDailyMintCap(bob, 50_000e6);
+    }
+
+    function testSetMarketDailyMintCapRevertsForZeroAddress() public {
+        vm.expectRevert(AmmoManager.ZeroAddress.selector);
+        manager.setMarketDailyMintCap(address(0), 50_000e6);
+    }
+
+    function testSetMarketDailyMintCapEmitsEvent() public {
+        vm.expectEmit(true, false, false, true);
+        emit AmmoManager.MarketDailyMintCapUpdated(alice, 0, 50_000e6);
+        manager.setMarketDailyMintCap(alice, 50_000e6);
+
+        vm.expectEmit(true, false, false, true);
+        emit AmmoManager.MarketDailyMintCapUpdated(alice, 50_000e6, 25_000e6);
+        manager.setMarketDailyMintCap(alice, 25_000e6);
+    }
+
     // ── Denylist admin ──────────────────────────────
 
     function testSetDeniedAddsAndRemoves() public {

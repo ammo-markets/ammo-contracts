@@ -32,6 +32,7 @@ interface IAmmoManager {
     event FeeRecipientUpdated(address indexed oldRecipient, address indexed newRecipient);
     event KeeperUpdated(address indexed keeper, bool allowed);
     event TreasuryUpdated(address indexed oldTreasury, address indexed newTreasury);
+    event MarketDailyMintCapUpdated(address indexed market, uint256 oldCap, uint256 newCap);
 
     // ── Events (tax) ────────────────────────────────
 
@@ -50,6 +51,7 @@ interface IAmmoManager {
     function feeRecipient() external view returns (address);
     function treasury() external view returns (address);
     function keepers(address account) external view returns (bool);
+    function marketDailyMintCapUsdc(address market) external view returns (uint256);
     function isKeeper(address account) external view returns (bool);
     function isOwner(address account) external view returns (bool);
 
@@ -88,6 +90,7 @@ interface IAmmoManager {
 
     function setFeeRecipient(address newRecipient) external;
     function setTreasury(address newTreasury) external;
+    function setMarketDailyMintCap(address market, uint256 capUsdc) external;
 
     // ── Tax admin ───────────���───────────────────────
 

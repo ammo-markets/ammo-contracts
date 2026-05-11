@@ -60,6 +60,8 @@ interface ICaliberMarket {
     function nextMintOrderId() external view returns (uint256);
     function nextRedeemOrderId() external view returns (uint256);
     function nextExitOrderId() external view returns (uint256);
+    function dailyMintDay() external view returns (uint256);
+    function dailyMintUsedUsdc() external view returns (uint256);
     function mintOrders(uint256 orderId)
         external
         view

@@ -41,6 +41,7 @@ contract DeployMainnet is Script {
     uint256 constant FARM_CAP = 365_000_000e18;
     uint256 constant TREASURY_CAP = (FARM_CAP * 40) / 60;
     uint256 constant TREASURY_VOLUME_TARGET = 10_000_000e6;
+    uint256 constant INITIAL_DAILY_MINT_CAP = 50_000e6;
 
     struct CaliberDeployment {
         address market;
@@ -108,12 +109,15 @@ contract DeployMainnet is Script {
     function _deploy9mmPractice() internal {
         (address market, address token) =
             factory.createCaliber(bytes32("9MM_PRACTICE"), "Ammo Exchange 9mm Practice", "9MM-P", 150, 150, 0, 50);
+        manager.setMarketDailyMintCap(market, INITIAL_DAILY_MINT_CAP);
         deployed9mmPractice = CaliberDeployment(market, token);
     }
 
     function _deploy9mmSelfDefense() internal {
-        (address market, address token) =
-            factory.createCaliber(bytes32("9MM_SELF_DEFENSE"), "Ammo Exchange 9mm Self Defense", "9MM-SD", 150, 150, 0, 50);
+        (address market, address token) = factory.createCaliber(
+            bytes32("9MM_SELF_DEFENSE"), "Ammo Exchange 9mm Self Defense", "9MM-SD", 150, 150, 0, 50
+        );
+        manager.setMarketDailyMintCap(market, INITIAL_DAILY_MINT_CAP);
         deployed9mmSelfDefense = CaliberDeployment(market, token);
     }
 
@@ -121,6 +125,7 @@ contract DeployMainnet is Script {
         (address market, address token) = factory.createCaliber(
             bytes32("556_SELF_DEFENSE"), "Ammo Exchange 5.56 Self Defense", "556-SD", 150, 150, 0, 50
         );
+        manager.setMarketDailyMintCap(market, INITIAL_DAILY_MINT_CAP);
         deployed556SelfDefense = CaliberDeployment(market, token);
     }
 
@@ -128,6 +133,7 @@ contract DeployMainnet is Script {
         (address market, address token) = factory.createCaliber(
             bytes32("556_NATO_PRACTICE"), "Ammo Exchange 5.56 NATO Practice", "556-P", 150, 150, 0, 50
         );
+        manager.setMarketDailyMintCap(market, INITIAL_DAILY_MINT_CAP);
         deployed556NatoPractice = CaliberDeployment(market, token);
     }
 

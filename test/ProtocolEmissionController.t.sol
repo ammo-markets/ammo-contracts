@@ -56,6 +56,7 @@ contract ProtocolEmissionControllerTest is Test {
 
     function testCaliberMintMintsTreasuryShareFromUsdcVolume() public {
         (address market,) = factory.createCaliber(bytes32("9MM"), "Ammo 9MM", "MO9MM", 150, 150, 0, 0);
+        manager.setMarketDailyMintCap(market, type(uint256).max);
         oracle.setPrice(market, ORACLE_PRICE);
 
         usdc.mint(user, 100e6);
@@ -75,6 +76,7 @@ contract ProtocolEmissionControllerTest is Test {
 
     function testTreasuryMintCapsAtVolumeTarget() public {
         (address market,) = factory.createCaliber(bytes32("9MM"), "Ammo 9MM", "MO9MM", 150, 150, 0, 0);
+        manager.setMarketDailyMintCap(market, type(uint256).max);
         oracle.setPrice(market, ORACLE_PRICE);
 
         usdc.mint(user, VOLUME_TARGET + 1e6);
@@ -92,6 +94,7 @@ contract ProtocolEmissionControllerTest is Test {
 
     function testAdditionalCaliberMintAfterTreasuryCapDoesNotRevertOrMintMore() public {
         (address market,) = factory.createCaliber(bytes32("9MM"), "Ammo 9MM", "MO9MM", 150, 150, 0, 0);
+        manager.setMarketDailyMintCap(market, type(uint256).max);
         oracle.setPrice(market, ORACLE_PRICE);
 
         usdc.mint(user, VOLUME_TARGET + 101e6);
@@ -118,6 +121,7 @@ contract ProtocolEmissionControllerTest is Test {
 
     function testPostCapControllerRecordDoesNotRequireTreasuryAddress() public {
         (address market,) = factory.createCaliber(bytes32("9MM"), "Ammo 9MM", "MO9MM", 150, 150, 0, 0);
+        manager.setMarketDailyMintCap(market, type(uint256).max);
         oracle.setPrice(market, ORACLE_PRICE);
 
         usdc.mint(user, VOLUME_TARGET + 101e6);

@@ -92,6 +92,7 @@ contract AmmoTokenTaxForkTest is Test {
             })
         );
         token = market.token();
+        manager.setMarketDailyMintCap(address(market), type(uint256).max);
 
         _mintTokensTo(user, 10_000e6);
         _mintTokensTo(liquidityProvider, 50_000e6);

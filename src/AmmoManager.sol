@@ -32,6 +32,10 @@ contract AmmoManager {
 
     mapping(address => bool) public keepers;
 
+    /// @notice Per-market maximum gross USDC/USDT mint requests accepted per chain day.
+    /// @dev Stored in the payment token's native decimals. A zero cap disables mint requests.
+    mapping(address => uint256) public marketDailyMintCapUsdc;
+
     // ── Tax state (centralized) ─────────────────────
 
     /// @notice Wrapped native token address (immutable per chain).
@@ -77,6 +81,7 @@ contract AmmoManager {
     event FeeRecipientUpdated(address indexed oldRecipient, address indexed newRecipient);
     event KeeperUpdated(address indexed keeper, bool allowed);
     event TreasuryUpdated(address indexed oldTreasury, address indexed newTreasury);
+    event MarketDailyMintCapUpdated(address indexed market, uint256 oldCap, uint256 newCap);
 
     // ── Events (tax) ────────────────────────────────
 
@@ -154,6 +159,15 @@ contract AmmoManager {
         address old = treasury;
         treasury = newTreasury;
         emit TreasuryUpdated(old, newTreasury);
+    }
+
+    /// @notice Set the daily gross mint-request cap for a CaliberMarket.
+    /// @dev Cap is in the market's payment token native decimals. A zero cap disables mint requests.
+    function setMarketDailyMintCap(address market, uint256 capUsdc) external onlyOwner {
+        if (market == address(0)) revert ZeroAddress();
+        uint256 old = marketDailyMintCapUsdc[market];
+        marketDailyMintCapUsdc[market] = capUsdc;
+        emit MarketDailyMintCapUpdated(market, old, capUsdc);
     }
 
     // ══════════════════════════════════════════════════

@@ -68,6 +68,7 @@ contract AmmoTokenTaxTest is Test {
             })
         );
         token = market.token();
+        manager.setMarketDailyMintCap(address(market), type(uint256).max);
 
         // Configure tax: 3% buy, 3% sell on the pool
         manager.setPoolTax(address(token), pool, BUY_TAX, SELL_TAX);

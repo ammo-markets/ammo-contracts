@@ -69,6 +69,7 @@ contract AmmoTokenDenylistTest is Test {
             })
         );
         token = market.token();
+        manager.setMarketDailyMintCap(address(market), type(uint256).max);
 
         manager.setPoolTax(address(token), pool, BUY_TAX, SELL_TAX);
         manager.setSwapPath(address(token), wavax, false);

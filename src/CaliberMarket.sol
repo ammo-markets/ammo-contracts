@@ -83,13 +83,10 @@ contract CaliberMarket {
     error InvalidStatus();
     error Reentrancy();
     error TreasuryNotSet();
+    error DailyMintCapExceeded();
 
     event MintRequested(
-        uint256 indexed orderId,
-        address indexed user,
-        uint256 usdcAmount,
-        uint256 requestPrice,
-        uint64 deadline
+        uint256 indexed orderId, address indexed user, uint256 usdcAmount, uint256 requestPrice, uint64 deadline
     );
     event MintFinalized(
         uint256 indexed orderId,
@@ -113,17 +110,14 @@ contract CaliberMarket {
         uint64 deadline
     );
     event ExitFinalized(
-        uint256 indexed orderId,
-        address indexed user,
-        uint256 burnedTokens,
-        uint256 payoutUsdc,
-        uint256 exitFeeUsdc
+        uint256 indexed orderId, address indexed user, uint256 burnedTokens, uint256 payoutUsdc, uint256 exitFeeUsdc
     );
     event ExitCanceled(uint256 indexed orderId, address indexed user, uint256 unlockedTokens, uint8 reasonCode);
     event MintFeeUpdated(uint256 oldBps, uint256 newBps);
     event RedeemFeeUpdated(uint256 oldBps, uint256 newBps);
     event ExitFeeUpdated(uint256 oldBps, uint256 newBps);
     event MinMintUpdated(uint256 oldMin, uint256 newMin);
+    event DailyMintUsed(uint256 indexed day, uint256 usdcAmount, uint256 usedUsdc, uint256 capUsdc);
     event Paused(address indexed by);
     event Unpaused(address indexed by);
 
@@ -147,6 +141,8 @@ contract CaliberMarket {
     uint256 public nextMintOrderId = 1;
     uint256 public nextRedeemOrderId = 1;
     uint256 public nextExitOrderId = 1;
+    uint256 public dailyMintDay;
+    uint256 public dailyMintUsedUsdc;
     uint256 private _locked;
 
     mapping(uint256 => MintOrder) public mintOrders;
@@ -204,7 +200,12 @@ contract CaliberMarket {
 
     // ── Mint ────────────────────────────────────────
 
-    function startMint(uint256 usdcAmount, uint64 deadline) external whenNotPaused nonReentrant returns (uint256 orderId) {
+    function startMint(uint256 usdcAmount, uint64 deadline)
+        external
+        whenNotPaused
+        nonReentrant
+        returns (uint256 orderId)
+    {
         if (usdcAmount == 0) revert InvalidAmount();
 
         (uint256 price,) = _freshPrice();
@@ -213,6 +214,7 @@ contract CaliberMarket {
         uint256 tokenAmount = _tokensForUsdc(netUsdc, price);
         if (tokenAmount < minMintRounds * 1e18) revert MinMintNotMet();
 
+        _consumeDailyMintCapacity(usdcAmount);
         _safeTransferFrom(usdc, msg.sender, address(this), usdcAmount);
 
         orderId = nextMintOrderId++;
@@ -460,6 +462,20 @@ contract CaliberMarket {
         uint256 discountedUsdc = (grossUsdc * AMMO_SQUARED_EXIT_BPS) / 10_000;
         feeUsdc = (discountedUsdc * feeBps) / 10_000;
         payoutUsdc = discountedUsdc - feeUsdc;
+    }
+
+    function _consumeDailyMintCapacity(uint256 usdcAmount) internal {
+        uint256 cap = manager.marketDailyMintCapUsdc(address(this));
+        if (cap == 0) revert DailyMintCapExceeded();
+
+        uint256 day = block.timestamp / 1 days;
+        uint256 used = dailyMintDay == day ? dailyMintUsedUsdc : 0;
+        uint256 newUsed = used + usdcAmount;
+        if (newUsed > cap) revert DailyMintCapExceeded();
+
+        dailyMintDay = day;
+        dailyMintUsedUsdc = newUsed;
+        emit DailyMintUsed(day, usdcAmount, newUsed, cap);
     }
 
     function _requireKeeperOrExpiredUser(address user, uint64 deadline) internal view {
