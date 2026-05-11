@@ -6,6 +6,7 @@ import "../src/MockUSDC.sol";
 import "../src/PriceOracle.sol";
 import "../src/AmmoManager.sol";
 import "../src/AmmoFactory.sol";
+import "../src/ExitLiquidityPool.sol";
 import "../src/AmmoLiquidityManager.sol";
 import "../src/ProtocolEmissionController.sol";
 import "../src/ProtocolToken.sol";
@@ -26,6 +27,7 @@ contract DeployFuji is Script {
     ProtocolToken public protocolToken;
     ProtocolEmissionController public emissionController;
     PriceOracle public oracle;
+    ExitLiquidityPool public exitLiquidityPool;
     AmmoFactory public factory;
 
     uint256 constant FARM_CAP = 365_000_000e18;
@@ -63,8 +65,10 @@ contract DeployFuji is Script {
         // 4. Deploy PriceOracle
         oracle = new PriceOracle(address(manager));
 
-        // 5. Deploy AmmoFactory with oracle
-        factory = new AmmoFactory(address(manager), address(usdc), 6, address(oracle));
+        // 5. Deploy shared exit liquidity pool and AmmoFactory with oracle
+        exitLiquidityPool = new ExitLiquidityPool(address(manager), address(usdc), msg.sender);
+        factory = new AmmoFactory(address(manager), address(usdc), 6, address(oracle), address(exitLiquidityPool));
+        exitLiquidityPool.setFactory(address(factory));
 
         // 6. Deploy protocol emission stack and lock the mint path
         protocolToken = new ProtocolToken("Ammo Protocol", "AMMO", address(manager));
@@ -93,26 +97,26 @@ contract DeployFuji is Script {
 
     function _deploy9mmPractice() internal {
         (address market, address token) =
-            factory.createCaliber(bytes32("9MM_PRACTICE"), "Ammo Exchange 9mm Practice", "9MM-P", 150, 150, 50);
+            factory.createCaliber(bytes32("9MM_PRACTICE"), "Ammo Exchange 9mm Practice", "9MM-P", 150, 150, 0, 50);
         deployed9mmPractice = CaliberDeployment(market, token);
     }
 
     function _deploy9mmSelfDefense() internal {
         (address market, address token) =
-            factory.createCaliber(bytes32("9MM_SELF_DEFENSE"), "Ammo Exchange 9mm Self Defense", "9MM-SD", 150, 150, 50);
+            factory.createCaliber(bytes32("9MM_SELF_DEFENSE"), "Ammo Exchange 9mm Self Defense", "9MM-SD", 150, 150, 0, 50);
         deployed9mmSelfDefense = CaliberDeployment(market, token);
     }
 
     function _deploy556SelfDefense() internal {
         (address market, address token) = factory.createCaliber(
-            bytes32("556_SELF_DEFENSE"), "Ammo Exchange 5.56 Self Defense", "556-SD", 150, 150, 50
+            bytes32("556_SELF_DEFENSE"), "Ammo Exchange 5.56 Self Defense", "556-SD", 150, 150, 0, 50
         );
         deployed556SelfDefense = CaliberDeployment(market, token);
     }
 
     function _deploy556NatoPractice() internal {
         (address market, address token) = factory.createCaliber(
-            bytes32("556_NATO_PRACTICE"), "Ammo Exchange 5.56 NATO Practice", "556-P", 150, 150, 50
+            bytes32("556_NATO_PRACTICE"), "Ammo Exchange 5.56 NATO Practice", "556-P", 150, 150, 0, 50
         );
         deployed556NatoPractice = CaliberDeployment(market, token);
     }
@@ -142,6 +146,7 @@ contract DeployFuji is Script {
         console.log("ProtocolToken:", address(protocolToken));
         console.log("ProtocolEmissionController:", address(emissionController));
         console.log("PriceOracle:", address(oracle));
+        console.log("ExitLiquidityPool:", address(exitLiquidityPool));
         console.log("AmmoFactory:", address(factory));
         console.log("PairFactory:", PAIR_FACTORY);
         console.log("Router:", DEX_ROUTER);

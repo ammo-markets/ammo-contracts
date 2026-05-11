@@ -3,6 +3,8 @@ pragma solidity ^0.8.24;
 
 import {AmmoManager} from "./AmmoManager.sol";
 import {IDexRouter} from "./interfaces/IDexRouter.sol";
+import {IPairFactory} from "./interfaces/IPairFactory.sol";
+import {ISolidlyPair} from "./interfaces/ISolidlyPair.sol";
 
 /// @notice ERC20 token with fee-on-transfer tax for DEX trades.
 /// @dev Mint/burn restricted to its CaliberMarket. Tax config is read from AmmoManager.
@@ -150,17 +152,42 @@ contract AmmoToken {
     }
 
     /// @dev Swap accumulated tax tokens to native AVAX via the configured DEX router.
-    ///      Sends AVAX directly to treasury. Failures are silently caught so user
-    ///      trades are never blocked by swap issues.
+    ///      `amountOutMin` is derived from the pair's built-in 30-minute TWAP rather
+    ///      than spot, so a same-block sandwich cannot push the reference price within
+    ///      the swap itself. Sends AVAX directly to treasury. Failures (no pair, cold
+    ///      observation buffer, swap rejection) are silently caught so user trades are
+    ///      never blocked by buyback issues.
     function _sellTaxes() internal {
         uint256 tokenBalance = balanceOf[address(this)];
         if (tokenBalance == 0) return;
 
-        (address router, address wavax_, AmmoManager.SwapPath memory swapPath,, address treasury_) =
-            manager.getSwapConfig(address(this));
+        (
+            address router,
+            address wavax_,
+            AmmoManager.SwapPath memory swapPath,,
+            uint256 slippageBps,
+            address treasury_
+        ) = manager.getSwapConfig(address(this));
 
         if (router == address(0) || treasury_ == address(0) || swapPath.outputToken == address(0)) return;
         if (swapPath.outputToken != wavax_) return;
+
+        address pair = IPairFactory(IDexRouter(router).factory()).getPair(address(this), wavax_, swapPath.stable);
+        if (pair == address(0)) return;
+
+        uint256 twapOut;
+        try ISolidlyPair(pair).current(address(this), tokenBalance) returns (uint256 out) {
+            twapOut = out;
+        } catch {
+            return;
+        }
+        if (twapOut == 0) return;
+
+        uint256 amountOutMin = (twapOut * (_BPS_DIVISOR - slippageBps)) / _BPS_DIVISOR;
+
+        // Build DEX path: AmmoToken -> WAVAX. The router unwraps WAVAX to native AVAX.
+        IDexRouter.route[] memory routes = new IDexRouter.route[](1);
+        routes[0] = IDexRouter.route({from: address(this), to: wavax_, stable: swapPath.stable});
 
         _inSwap = true;
 
@@ -168,17 +195,9 @@ contract AmmoToken {
         allowance[address(this)][router] = tokenBalance;
         emit Approval(address(this), router, tokenBalance);
 
-        // Build DEX path: AmmoToken -> WAVAX. The router unwraps WAVAX to native AVAX.
-        IDexRouter.route[] memory routes = new IDexRouter.route[](1);
-        routes[0] = IDexRouter.route({from: address(this), to: wavax_, stable: swapPath.stable});
-
         try IDexRouter(router)
             .swapExactTokensForETHSupportingFeeOnTransferTokens(
-                tokenBalance,
-                0, // amountOutMin: no slippage protection for small tax swaps
-                routes,
-                treasury_,
-                block.timestamp
+                tokenBalance, amountOutMin, routes, treasury_, block.timestamp
             ) {
             emit TaxesSold(tokenBalance, treasury_);
             allowance[address(this)][router] = 0;

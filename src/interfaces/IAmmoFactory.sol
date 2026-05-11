@@ -26,6 +26,8 @@ interface IAmmoFactory {
     function manager() external view returns (address);
     function usdc() external view returns (address);
     function usdcDecimals() external view returns (uint8);
+    function oracle() external view returns (address);
+    function exitLiquidityPool() external view returns (address);
     function calibers(bytes32 caliberId) external view returns (address market, address token);
     function caliberIds(uint256 index) external view returns (bytes32);
     function getCaliberCount() external view returns (uint256);
@@ -39,9 +41,9 @@ interface IAmmoFactory {
         bytes32 caliberId,
         string calldata name,
         string calldata symbol,
-        address oracle,
         uint256 mintFeeBps,
         uint256 redeemFeeBps,
+        uint256 exitFeeBps,
         uint256 minMintRounds
     ) external returns (address market, address token);
 }

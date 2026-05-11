@@ -6,6 +6,7 @@ import "../src/AmmoManager.sol";
 import "../src/AmmoToken.sol";
 import "../src/AmmoLiquidityManager.sol";
 import "../src/CaliberMarket.sol";
+import "../src/ExitLiquidityPool.sol";
 import "./MockDexRouter.sol";
 import "./MockPriceOracle.sol";
 import "./MockERC20.sol";
@@ -22,6 +23,7 @@ contract AmmoTokenDenylistTest is Test {
     MockERC20 usdc;
     MockPriceOracle oracle;
     MockEmissionController emissionController;
+    ExitLiquidityPool exitLiquidityPool;
 
     address user = address(0xBEEF);
     address user2 = address(0xCAFE);
@@ -29,6 +31,7 @@ contract AmmoTokenDenylistTest is Test {
     address pool = address(0xDEE1); // simulated DEX pair
     address treasury = address(0x73EA5);
     address feeRecipient = address(0xFEE1);
+    address liquiditySource = address(0x5150);
     address wavax = address(0xAA0C);
 
     bytes32 constant CALIBER_9MM = bytes32("9MM");
@@ -46,6 +49,7 @@ contract AmmoTokenDenylistTest is Test {
         manager = new AmmoManager(feeRecipient, wavax);
         manager.setTreasury(treasury);
         manager.setDexRouter(address(router));
+        exitLiquidityPool = new ExitLiquidityPool(address(manager), address(usdc), liquiditySource);
 
         market = new CaliberMarket(
             CaliberMarket.MarketConfig({
@@ -54,11 +58,13 @@ contract AmmoTokenDenylistTest is Test {
                 usdcDecimals: 6,
                 oracle: address(oracle),
                 emissionController: address(emissionController),
+                exitLiquidityPool: address(exitLiquidityPool),
                 caliberId: CALIBER_9MM,
                 tokenName: "Ammo 9MM",
                 tokenSymbol: "MO9MM",
                 mintFeeBps: 150,
                 redeemFeeBps: 150,
+                exitFeeBps: 0,
                 minMintRounds: 50
             })
         );
@@ -244,6 +250,7 @@ contract AmmoTokenDenylistTest is Test {
         vm.prank(who);
         usdc.approve(address(market), usdcAmount);
         vm.prank(who);
-        market.mint(usdcAmount);
+        uint256 orderId = market.startMint(usdcAmount, 0);
+        market.finalizeMint(orderId);
     }
 }

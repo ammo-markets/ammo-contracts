@@ -6,6 +6,7 @@ import "../src/AmmoManager.sol";
 import "../src/AmmoToken.sol";
 import "../src/AmmoLiquidityManager.sol";
 import "../src/CaliberMarket.sol";
+import "../src/ExitLiquidityPool.sol";
 import "./MockDexRouter.sol";
 import "./MockPriceOracle.sol";
 import "./MockERC20.sol";
@@ -20,6 +21,7 @@ contract AmmoTokenTaxTest is Test {
     MockERC20 usdc;
     MockPriceOracle oracle;
     MockEmissionController emissionController;
+    ExitLiquidityPool exitLiquidityPool;
 
     address owner = address(this);
     address user = address(0xBEEF);
@@ -27,6 +29,7 @@ contract AmmoTokenTaxTest is Test {
     address pool = address(0xDEE1); // simulated DEX pair
     address treasury = address(0x73EA5);
     address feeRecipient = address(0xFEE1);
+    address liquiditySource = address(0x5150);
     address wavax = address(0xAA0C);
 
     bytes32 constant CALIBER_9MM = bytes32("9MM");
@@ -45,6 +48,7 @@ contract AmmoTokenTaxTest is Test {
         manager.setTreasury(treasury);
         manager.setDexRouter(address(router));
         manager.setTaxExempt(address(liquidityManager), true);
+        exitLiquidityPool = new ExitLiquidityPool(address(manager), address(usdc), liquiditySource);
 
         market = new CaliberMarket(
             CaliberMarket.MarketConfig({
@@ -53,11 +57,13 @@ contract AmmoTokenTaxTest is Test {
                 usdcDecimals: 6,
                 oracle: address(oracle),
                 emissionController: address(emissionController),
+                exitLiquidityPool: address(exitLiquidityPool),
                 caliberId: CALIBER_9MM,
                 tokenName: "Ammo 9MM",
                 tokenSymbol: "MO9MM",
                 mintFeeBps: 150,
                 redeemFeeBps: 150,
+                exitFeeBps: 0,
                 minMintRounds: 50
             })
         );
@@ -263,6 +269,7 @@ contract AmmoTokenTaxTest is Test {
 
         assertTrue(router.callCount() > 0, "Swap triggered on regular transfer");
         assertTrue(treasury.balance > treasuryAvaxBefore, "Treasury received AVAX");
+        assertEq(router.lastAmountOutMin(), (taxBalance / 1000 * 9_000) / 10_000, "Uses configured slippage");
     }
 
     function testAutoSwapDoesNotFireDuringSell() public {
@@ -334,6 +341,40 @@ contract AmmoTokenTaxTest is Test {
         assertEq(token.balanceOf(user2) - user2Before, 10e18);
     }
 
+    function testAutoSwapQuoteFailureDoesNotRevertUserTrade() public {
+        vm.prank(user);
+        token.transfer(pool, 100e18);
+
+        router.setShouldRevertQuote(true);
+
+        uint256 taxBefore = token.balanceOf(address(token));
+        uint256 user2Before = token.balanceOf(user2);
+
+        vm.prank(user);
+        token.transfer(user2, 10e18);
+
+        assertEq(token.balanceOf(user2) - user2Before, 10e18);
+        assertEq(token.balanceOf(address(token)), taxBefore);
+        assertEq(router.callCount(), 0);
+    }
+
+    function testAutoSwapBelowMinOutputDoesNotRevertUserTrade() public {
+        vm.prank(user);
+        token.transfer(pool, 100e18);
+
+        router.setSwapAmountOutDivisor(10_000);
+
+        uint256 taxBefore = token.balanceOf(address(token));
+        uint256 user2Before = token.balanceOf(user2);
+
+        vm.prank(user);
+        token.transfer(user2, 10e18);
+
+        assertEq(token.balanceOf(user2) - user2Before, 10e18);
+        assertEq(token.balanceOf(address(token)), taxBefore);
+        assertEq(router.callCount(), 0);
+    }
+
     // ═══════════════════════════════════════════════
     // ── Tax Admin (via AmmoManager) ───────────────
     // ═══════════════════════════════════════════════
@@ -346,6 +387,19 @@ contract AmmoTokenTaxTest is Test {
         assertEq(buyTax, 500);
         assertEq(sellTax, 500);
         assertTrue(buyTax > 0 || sellTax > 0);
+    }
+
+    function testSetPoolTaxAllowsZeroTax() public {
+        manager.setPoolTax(address(token), pool, 0, 0);
+
+        (uint256 buyTax, uint256 sellTax) = manager.tokenPoolTax(address(token), pool);
+        assertEq(buyTax, 0);
+        assertEq(sellTax, 0);
+
+        uint256 poolBefore = token.balanceOf(pool);
+        vm.prank(user);
+        token.transfer(pool, 50e18);
+        assertEq(token.balanceOf(pool) - poolBefore, 50e18);
     }
 
     function testRemovePoolTax() public {
@@ -383,10 +437,15 @@ contract AmmoTokenTaxTest is Test {
         assertEq(manager.dexRouter(), newRouter);
     }
 
-    function testGetTokenPools() public {
-        address[] memory pools = manager.getTokenPools(address(token));
-        assertEq(pools.length, 1);
-        assertEq(pools[0], pool);
+    function testSetTaxSwapSlippageBps() public {
+        assertEq(manager.taxSwapSlippageBps(), 1_000);
+        manager.setTaxSwapSlippageBps(250);
+        assertEq(manager.taxSwapSlippageBps(), 250);
+    }
+
+    function testSetTaxSwapSlippageBpsRejectsTooHigh() public {
+        vm.expectRevert(AmmoManager.TaxTooHigh.selector);
+        manager.setTaxSwapSlippageBps(5_001);
     }
 
     // ═══════════════════════════════════════════════
@@ -420,6 +479,7 @@ contract AmmoTokenTaxTest is Test {
         vm.prank(who);
         usdc.approve(address(market), usdcAmount);
         vm.prank(who);
-        market.mint(usdcAmount);
+        uint256 orderId = market.startMint(usdcAmount, 0);
+        market.finalizeMint(orderId);
     }
 }

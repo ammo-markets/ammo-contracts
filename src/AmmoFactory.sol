@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import "./AmmoManager.sol";
 import "./CaliberMarket.sol";
 import "./PriceOracle.sol";
+import {IExitLiquidityPool} from "./interfaces/IExitLiquidityPool.sol";
 
 /// @notice Deploys and registers per-caliber CaliberMarket + AmmoToken pairs.
 /// @dev Only callable by the AmmoManager owner. Each caliber gets its own
@@ -14,6 +15,7 @@ contract AmmoFactory {
     address public immutable usdc;
     uint8 public immutable usdcDecimals;
     address public immutable oracle;
+    address public immutable exitLiquidityPool;
     address public emissionController;
 
     struct CaliberInfo {
@@ -39,12 +41,18 @@ contract AmmoFactory {
         _;
     }
 
-    constructor(address manager_, address usdc_, uint8 usdcDecimals_, address oracle_) {
-        if (manager_ == address(0) || usdc_ == address(0) || oracle_ == address(0)) revert ZeroAddress();
+    constructor(address manager_, address usdc_, uint8 usdcDecimals_, address oracle_, address exitLiquidityPool_) {
+        if (
+            manager_ == address(0) || usdc_ == address(0) || oracle_ == address(0)
+                || exitLiquidityPool_ == address(0)
+        ) {
+            revert ZeroAddress();
+        }
         manager = AmmoManager(manager_);
         usdc = usdc_;
         usdcDecimals = usdcDecimals_;
         oracle = oracle_;
+        exitLiquidityPool = exitLiquidityPool_;
     }
 
     function setEmissionControllerOnce(address emissionController_) external onlyOwner {
@@ -63,6 +71,7 @@ contract AmmoFactory {
         string calldata symbol,
         uint256 mintFeeBps,
         uint256 redeemFeeBps,
+        uint256 exitFeeBps,
         uint256 minMintRounds
     ) external onlyOwner returns (address market, address token) {
         if (calibers[caliberId].market != address(0)) revert CaliberExists();
@@ -76,11 +85,13 @@ contract AmmoFactory {
                 usdcDecimals: usdcDecimals,
                 oracle: oracle,
                 emissionController: controller,
+                exitLiquidityPool: exitLiquidityPool,
                 caliberId: caliberId,
                 tokenName: name,
                 tokenSymbol: symbol,
                 mintFeeBps: mintFeeBps,
                 redeemFeeBps: redeemFeeBps,
+                exitFeeBps: exitFeeBps,
                 minMintRounds: minMintRounds
             })
         );
@@ -90,6 +101,7 @@ contract AmmoFactory {
 
         // Auto-register market with the shared oracle
         PriceOracle(oracle).registerMarket(market);
+        IExitLiquidityPool(exitLiquidityPool).setMarket(market, true);
 
         calibers[caliberId] = CaliberInfo({market: market, token: token});
         isMarket[market] = true;

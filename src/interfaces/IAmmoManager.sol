@@ -23,8 +23,6 @@ interface IAmmoManager {
     error NotPendingOwner();
     error ZeroAddress();
     error TaxTooHigh();
-    error PoolAlreadyTaxed();
-    error PoolNotTaxed();
 
     // ── Events (core) ───────────────────────────────
 
@@ -39,9 +37,9 @@ interface IAmmoManager {
 
     event DexRouterUpdated(address indexed oldRouter, address indexed newRouter);
     event PoolTaxSet(address indexed token, address indexed pool, uint256 buyTax, uint256 sellTax);
-    event PoolTaxRemoved(address indexed token, address indexed pool);
     event SwapPathUpdated(address indexed token, address indexed outputToken, bool stable);
     event TaxSwapThresholdUpdated(address indexed token, uint256 threshold);
+    event TaxSwapSlippageUpdated(uint256 oldBps, uint256 newBps);
     event TaxExemptUpdated(address indexed account, bool exempt);
 
     // ── View functions (core) ───────────────────────
@@ -62,12 +60,19 @@ interface IAmmoManager {
     function tokenPoolTax(address token, address pool) external view returns (uint256 buyTax, uint256 sellTax);
     function swapPaths(address token) external view returns (address outputToken, bool stable);
     function taxSwapThresholds(address token) external view returns (uint256);
+    function taxSwapSlippageBps() external view returns (uint256);
     function taxExempt(address account) external view returns (bool);
     function getSwapConfig(address token)
         external
         view
-        returns (address router, address wavax_, SwapPath memory path, uint256 threshold, address treasury_);
-    function getTokenPools(address token) external view returns (address[] memory);
+        returns (
+            address router,
+            address wavax_,
+            SwapPath memory path,
+            uint256 threshold,
+            uint256 slippageBps,
+            address treasury_
+        );
 
     // ── Ownership (2-step) ──────────────────────────
 
@@ -91,5 +96,6 @@ interface IAmmoManager {
     function removePoolTax(address token, address pool) external;
     function setSwapPath(address token, address outputToken, bool stable) external;
     function setTaxSwapThreshold(address token, uint256 threshold) external;
+    function setTaxSwapSlippageBps(uint256 newBps) external;
     function setTaxExempt(address account, bool exempt) external;
 }

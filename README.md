@@ -1,6 +1,6 @@
 # Ammo Markets — Smart Contracts
 
-DeFi protocol for tokenized ammunition trading on Avalanche C-Chain. Users deposit USDC to mint per-caliber ammo tokens (e.g., 9mm Practice, 5.56 NATO) at oracle prices, and redeem tokens back through a keeper-finalized flow. The protocol includes fee-on-transfer taxes for DEX trades, Chainlink-powered price feeds, and a capped emission system for LP farming incentives.
+DeFi protocol for tokenized ammunition trading on Avalanche C-Chain. Users escrow USDC in a keeper-finalized mint flow to receive per-caliber ammo tokens (e.g., 9mm Practice, 5.56 NATO), redeem tokens for real-world ammo fulfillment, or request a USDC exit through a shared liquidity pool. The protocol includes fee-on-transfer taxes for DEX trades, Chainlink-powered price feeds, and a capped emission system for LP farming incentives.
 
 - **Solidity:** 0.8.24
 - **Framework:** [Foundry](https://book.getfoundry.sh/)
@@ -34,6 +34,7 @@ Copy `.env.example` to `.env`:
 | `FUJI_RPC_URL` | Testnet deploy | Avalanche Fuji C-Chain RPC |
 | `AVALANCHE_RPC_URL` | Mainnet deploy | Avalanche Mainnet C-Chain RPC |
 | `PRIVATE_KEY` | All deploys | Deployer EOA private key |
+| `LIQUIDITY_SOURCE` | Mainnet deploy | Wallet the shared exit pool can pull USDT shortfalls from |
 | `SNOWTRACE_API_KEY` | Verification | Avascan API key for contract verification |
 
 ## Core Contracts
@@ -42,8 +43,10 @@ Copy `.env.example` to `.env`:
 AmmoManager                          Central admin — roles, tax config, denylist
   │
   ├── AmmoFactory                    Deploys per-caliber market + token pairs
-  │     └── CaliberMarket            Mint/redeem order book per caliber
+  │     └── CaliberMarket            Mint/redeem/exit order book per caliber
   │           └── AmmoToken          ERC20 with fee-on-transfer tax
+  │
+  ├── ExitLiquidityPool              Shared USDC/USDT pool for exit settlement
   │
   ├── PriceOracle                    Per-market price storage (keeper-updated)
   │     └── AmmoPriceFunctions       Chainlink Functions consumer (auto-updates oracle)
@@ -60,7 +63,8 @@ The most important files for understanding the protocol:
 | Contract | File | What It Does |
 |----------|------|-------------|
 | **AmmoManager** | `src/AmmoManager.sol` | Global config hub. All contracts read roles (owner, keeper, guardian), tax rates, and the transfer denylist from here. |
-| **CaliberMarket** | `src/CaliberMarket.sol` | Where users interact. 1-step instant mint (USDC → tokens), 2-step redeem (tokens locked → keeper finalizes or user self-cancels after deadline). |
+| **CaliberMarket** | `src/CaliberMarket.sol` | Where users interact. 2-step mint (USDC escrow → keeper finalizes), 2-step redeem for real-world ammo fulfillment, and 2-step exit (tokens locked → shared pool pays USDC/USDT). |
+| **ExitLiquidityPool** | `src/ExitLiquidityPool.sol` | Shared exit settlement pool. Authorized markets pay users from pool balance first, then pull only shortfalls from a configured liquidity source wallet. |
 | **AmmoToken** | `src/AmmoToken.sol` | Per-caliber ERC20 with buy/sell tax on DEX trades. Taxes accumulate and auto-swap to WAVAX → treasury. Only its CaliberMarket can mint/burn. |
 | **PriceOracle** | `src/PriceOracle.sol` | Stores per-market prices at 1e18 scale. Keepers update manually or via Chainlink automation. CaliberMarket rejects prices older than 6 hours. |
 | **ProtocolEmissionController** | `src/ProtocolEmissionController.sol` | Caps and controls all protocol token emissions — farm rewards (time-decaying) and treasury rewards (volume-based). |
@@ -131,7 +135,7 @@ Uses the standard MasterChef `accRewardPerShare` / `rewardDebt` pattern:
 | Set-once initialization | ProtocolToken, AmmoFactory | Prevents re-wiring after deploy |
 | Denylist | AmmoToken | Blocks bridging/export of tokens |
 | Price staleness | CaliberMarket | Rejects oracle prices older than 6 hours |
-| Safe ERC20 transfers | CaliberMarket, AmmoToken | Low-level call pattern for non-standard tokens |
+| Safe ERC20 transfers | CaliberMarket, ExitLiquidityPool, AmmoToken | Low-level call pattern for non-standard tokens |
 | Try/catch tax swap | AmmoToken | DEX failures never revert user transfers |
 | Graceful oracle errors | AmmoPriceFunctions | Chainlink DON failures emit events, don't revert |
 

@@ -20,6 +20,7 @@ contract AmmoManager {
     // ── Constants ───────────────────────────────────
 
     uint256 public constant MAX_TAX_BPS = 1_000; // 10% max
+    uint256 public constant MAX_TAX_SWAP_SLIPPAGE_BPS = 5_000; // 50% max
 
     // ── Core protocol state ─────────────────────────
 
@@ -42,14 +43,16 @@ contract AmmoManager {
     /// @notice Per-token per-pool tax rates. token => pool => TaxConfig
     mapping(address => mapping(address => TaxConfig)) public tokenPoolTax;
 
-    /// @notice Per-token list of taxed pools for enumeration.
-    mapping(address => address[]) internal _tokenPools;
-
     /// @notice Per-token swap path configuration for auto-selling taxes.
     mapping(address => SwapPath) public swapPaths;
 
     /// @notice Per-token minimum accumulated tax balance before auto-swap triggers.
     mapping(address => uint256) public taxSwapThresholds;
+
+    /// @notice Slippage tolerance for automatic tax swaps in basis points.
+    /// @dev Compared against the pair's 30-minute TWAP, so the tolerance must
+    ///      cover normal TWAP-vs-spot drift (bigger than spot-vs-spot drift).
+    uint256 public taxSwapSlippageBps = 1_000;
 
     /// @notice Protocol-wide tax-exempt addresses (staking, vesting, etc.).
     mapping(address => bool) public taxExempt;
@@ -65,8 +68,6 @@ contract AmmoManager {
     error NotPendingOwner();
     error ZeroAddress();
     error TaxTooHigh();
-    error PoolAlreadyTaxed();
-    error PoolNotTaxed();
 
     // ── Events (core) ───────────────────────────────
 
@@ -81,9 +82,9 @@ contract AmmoManager {
 
     event DexRouterUpdated(address indexed oldRouter, address indexed newRouter);
     event PoolTaxSet(address indexed token, address indexed pool, uint256 buyTax, uint256 sellTax);
-    event PoolTaxRemoved(address indexed token, address indexed pool);
     event SwapPathUpdated(address indexed token, address indexed outputToken, bool stable);
     event TaxSwapThresholdUpdated(address indexed token, uint256 threshold);
+    event TaxSwapSlippageUpdated(uint256 oldBps, uint256 newBps);
     event TaxExemptUpdated(address indexed account, bool exempt);
     event DeniedUpdated(address indexed account, bool denied);
 
@@ -172,41 +173,12 @@ contract AmmoManager {
     /// @param buyBps Buy tax in basis points (max 1000 = 10%).
     /// @param sellBps Sell tax in basis points (max 1000 = 10%).
     function setPoolTax(address token, address pool, uint256 buyBps, uint256 sellBps) external onlyOwner {
-        if (token == address(0) || pool == address(0)) revert ZeroAddress();
-        if (buyBps > MAX_TAX_BPS || sellBps > MAX_TAX_BPS) revert TaxTooHigh();
-
-        TaxConfig storage config = tokenPoolTax[token][pool];
-        bool isNew = config.buyTax == 0 && config.sellTax == 0;
-
-        config.buyTax = buyBps;
-        config.sellTax = sellBps;
-
-        if (isNew) {
-            _tokenPools[token].push(pool);
-        }
-
-        emit PoolTaxSet(token, pool, buyBps, sellBps);
+        _setPoolTax(token, pool, buyBps, sellBps);
     }
 
     /// @notice Remove tax from a specific token's DEX pool.
     function removePoolTax(address token, address pool) external onlyOwner {
-        TaxConfig storage config = tokenPoolTax[token][pool];
-        if (config.buyTax == 0 && config.sellTax == 0) revert PoolNotTaxed();
-
-        config.buyTax = 0;
-        config.sellTax = 0;
-
-        // Remove from array
-        address[] storage pools = _tokenPools[token];
-        for (uint256 i = 0; i < pools.length; i++) {
-            if (pools[i] == pool) {
-                pools[i] = pools[pools.length - 1];
-                pools.pop();
-                break;
-            }
-        }
-
-        emit PoolTaxRemoved(token, pool);
+        _setPoolTax(token, pool, 0, 0);
     }
 
     /// @notice Configure the DEX swap path for a token's auto-swap.
@@ -224,6 +196,14 @@ contract AmmoManager {
         if (token == address(0)) revert ZeroAddress();
         taxSwapThresholds[token] = threshold;
         emit TaxSwapThresholdUpdated(token, threshold);
+    }
+
+    /// @notice Set automatic tax-swap slippage tolerance in basis points.
+    function setTaxSwapSlippageBps(uint256 newBps) external onlyOwner {
+        if (newBps > MAX_TAX_SWAP_SLIPPAGE_BPS) revert TaxTooHigh();
+        uint256 old = taxSwapSlippageBps;
+        taxSwapSlippageBps = newBps;
+        emit TaxSwapSlippageUpdated(old, newBps);
     }
 
     /// @notice Add or remove a protocol-wide tax exemption.
@@ -251,14 +231,16 @@ contract AmmoManager {
     function getSwapConfig(address token)
         external
         view
-        returns (address router, address wavax_, SwapPath memory path, uint256 threshold, address treasury_)
+        returns (
+            address router,
+            address wavax_,
+            SwapPath memory path,
+            uint256 threshold,
+            uint256 slippageBps,
+            address treasury_
+        )
     {
-        return (dexRouter, wavax, swapPaths[token], taxSwapThresholds[token], treasury);
-    }
-
-    /// @notice Get the list of taxed pools for a token.
-    function getTokenPools(address token) external view returns (address[] memory) {
-        return _tokenPools[token];
+        return (dexRouter, wavax, swapPaths[token], taxSwapThresholds[token], taxSwapSlippageBps, treasury);
     }
 
     // ══════════════════════════════════════════════════
@@ -267,6 +249,17 @@ contract AmmoManager {
 
     function _checkOwner() internal view {
         if (msg.sender != owner) revert NotOwner();
+    }
+
+    function _setPoolTax(address token, address pool, uint256 buyBps, uint256 sellBps) internal {
+        if (token == address(0) || pool == address(0)) revert ZeroAddress();
+        if (buyBps > MAX_TAX_BPS || sellBps > MAX_TAX_BPS) revert TaxTooHigh();
+
+        TaxConfig storage config = tokenPoolTax[token][pool];
+        config.buyTax = buyBps;
+        config.sellTax = sellBps;
+
+        emit PoolTaxSet(token, pool, buyBps, sellBps);
     }
 
     function isKeeper(address account) external view returns (bool) {
