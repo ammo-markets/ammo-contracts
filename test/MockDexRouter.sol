@@ -21,12 +21,15 @@ contract MockDexRouter {
 
     bool public shouldRevert;
     bool public shouldRevertQuote;
+    bool public shouldRevertFactory;
+    bool public shouldRevertPairLookup;
 
     constructor(address weth_) {
         WETH = weth_;
     }
 
     function factory() external view returns (address) {
+        if (shouldRevertFactory) revert("MockDexRouter: forced factory revert");
         return address(this);
     }
 
@@ -34,6 +37,7 @@ contract MockDexRouter {
     ///         resolve the pair through the same mock; tests that need to simulate
     ///         a missing pair can set `shouldRevertQuote = true` instead.
     function getPair(address, address, bool) external view returns (address) {
+        if (shouldRevertPairLookup) revert("MockDexRouter: forced pair lookup revert");
         return address(this);
     }
 
@@ -57,6 +61,14 @@ contract MockDexRouter {
 
     function setShouldRevertQuote(bool revert_) external {
         shouldRevertQuote = revert_;
+    }
+
+    function setShouldRevertFactory(bool revert_) external {
+        shouldRevertFactory = revert_;
+    }
+
+    function setShouldRevertPairLookup(bool revert_) external {
+        shouldRevertPairLookup = revert_;
     }
 
     function setAmountOutDivisor(uint256 divisor) external {

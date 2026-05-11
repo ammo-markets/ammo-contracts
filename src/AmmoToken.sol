@@ -172,15 +172,7 @@ contract AmmoToken {
         if (router == address(0) || treasury_ == address(0) || swapPath.outputToken == address(0)) return;
         if (swapPath.outputToken != wavax_) return;
 
-        address pair = IPairFactory(IDexRouter(router).factory()).getPair(address(this), wavax_, swapPath.stable);
-        if (pair == address(0)) return;
-
-        uint256 twapOut;
-        try ISolidlyPair(pair).current(address(this), tokenBalance) returns (uint256 out) {
-            twapOut = out;
-        } catch {
-            return;
-        }
+        uint256 twapOut = _taxSwapTwapOut(router, wavax_, swapPath.stable, tokenBalance);
         if (twapOut == 0) return;
 
         uint256 amountOutMin = (twapOut * (_BPS_DIVISOR - slippageBps)) / _BPS_DIVISOR;
@@ -209,5 +201,39 @@ contract AmmoToken {
         }
 
         _inSwap = false;
+    }
+
+    function _taxSwapTwapOut(address router, address wavax_, bool stable, uint256 tokenAmount)
+        internal
+        view
+        returns (uint256)
+    {
+        address factory = _safeRouterFactory(router);
+        if (factory == address(0)) return 0;
+
+        address pair = _safeFactoryPair(factory, wavax_, stable);
+        if (pair == address(0)) return 0;
+
+        try ISolidlyPair(pair).current(address(this), tokenAmount) returns (uint256 out) {
+            return out;
+        } catch {
+            return 0;
+        }
+    }
+
+    function _safeRouterFactory(address router) internal view returns (address) {
+        try IDexRouter(router).factory() returns (address factory_) {
+            return factory_;
+        } catch {
+            return address(0);
+        }
+    }
+
+    function _safeFactoryPair(address factory, address wavax_, bool stable) internal view returns (address) {
+        try IPairFactory(factory).getPair(address(this), wavax_, stable) returns (address pair_) {
+            return pair_;
+        } catch {
+            return address(0);
+        }
     }
 }

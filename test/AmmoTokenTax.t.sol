@@ -359,6 +359,40 @@ contract AmmoTokenTaxTest is Test {
         assertEq(router.callCount(), 0);
     }
 
+    function testAutoSwapFactoryFailureDoesNotRevertUserTrade() public {
+        vm.prank(user);
+        token.transfer(pool, 100e18);
+
+        router.setShouldRevertFactory(true);
+
+        uint256 taxBefore = token.balanceOf(address(token));
+        uint256 user2Before = token.balanceOf(user2);
+
+        vm.prank(user);
+        token.transfer(user2, 10e18);
+
+        assertEq(token.balanceOf(user2) - user2Before, 10e18);
+        assertEq(token.balanceOf(address(token)), taxBefore);
+        assertEq(router.callCount(), 0);
+    }
+
+    function testAutoSwapPairLookupFailureDoesNotRevertUserTrade() public {
+        vm.prank(user);
+        token.transfer(pool, 100e18);
+
+        router.setShouldRevertPairLookup(true);
+
+        uint256 taxBefore = token.balanceOf(address(token));
+        uint256 user2Before = token.balanceOf(user2);
+
+        vm.prank(user);
+        token.transfer(user2, 10e18);
+
+        assertEq(token.balanceOf(user2) - user2Before, 10e18);
+        assertEq(token.balanceOf(address(token)), taxBefore);
+        assertEq(router.callCount(), 0);
+    }
+
     function testAutoSwapBelowMinOutputDoesNotRevertUserTrade() public {
         vm.prank(user);
         token.transfer(pool, 100e18);
