@@ -258,4 +258,84 @@ contract AmmoPriceFunctionsTest is Test {
         assertEq(consumer.donId(), bytes32("new-don"));
         assertEq(consumer.callbackGasLimit(), 500_000);
     }
+
+    // ── setMarkets ───────────────────────────────────
+
+    function testSetMarketsOnlyOwner() public {
+        address[] memory markets = new address[](1);
+        string[] memory keys = new string[](1);
+        markets[0] = marketA;
+        keys[0] = "9MM_PRACTICE";
+
+        vm.prank(random);
+        vm.expectRevert(AmmoPriceFunctions.NotOwner.selector);
+        consumer.setMarkets(markets, keys);
+    }
+
+    function testSetMarketsRejectsLengthMismatch() public {
+        address[] memory markets = new address[](2);
+        markets[0] = marketA;
+        markets[1] = marketB;
+
+        string[] memory keys = new string[](1);
+        keys[0] = "9MM_PRACTICE";
+
+        vm.expectRevert(AmmoPriceFunctions.ArrayLengthMismatch.selector);
+        consumer.setMarkets(markets, keys);
+    }
+
+    function testSetMarketsReplacesList() public {
+        // Replace 2-element list with a single new market.
+        address marketC = address(0xC);
+        vm.prank(factoryAddr);
+        oracle.registerMarket(marketC);
+
+        address[] memory markets = new address[](1);
+        markets[0] = marketC;
+        string[] memory keys = new string[](1);
+        keys[0] = "556_NATO_PRACTICE";
+
+        consumer.setMarkets(markets, keys);
+
+        assertEq(consumer.caliberCount(), 1);
+        assertEq(consumer.marketAddresses(0), marketC);
+        assertEq(consumer.caliberKeys(0), "556_NATO_PRACTICE");
+    }
+
+    function testSetMarketsEmitsEvent() public {
+        address[] memory markets = new address[](1);
+        markets[0] = marketA;
+        string[] memory keys = new string[](1);
+        keys[0] = "9MM_PRACTICE";
+
+        vm.expectEmit(false, false, false, true);
+        emit AmmoPriceFunctions.MarketsUpdated(1);
+        consumer.setMarkets(markets, keys);
+    }
+
+    function testSetMarketsRoutesNextFulfillmentToNewList() public {
+        // Replace [marketA, marketB] with [marketB] only.
+        address[] memory markets = new address[](1);
+        markets[0] = marketB;
+        string[] memory keys = new string[](1);
+        keys[0] = "9MM_SELF_DEFENSE";
+        consumer.setMarkets(markets, keys);
+
+        // Trigger a new request after the replace.
+        vm.warp(4 hours + 1);
+        consumer.performUpkeep("");
+        bytes32 requestId = consumer.lastRequestId();
+
+        // DON response carries one price for the new single-market list.
+        uint256[] memory prices = new uint256[](1);
+        prices[0] = 99e16;
+
+        vm.prank(address(router));
+        consumer.handleOracleFulfillment(requestId, abi.encode(prices), "");
+
+        (uint256 priceA,,) = oracle.markets(marketA);
+        (uint256 priceB,,) = oracle.markets(marketB);
+        assertEq(priceA, 0); // untouched
+        assertEq(priceB, 99e16);
+    }
 }

@@ -50,6 +50,7 @@ contract AmmoPriceFunctions is FunctionsClient, AutomationCompatibleInterface {
     event SourceUpdated();
     event UpdateIntervalUpdated(uint256 newInterval);
     event ConfigUpdated(uint64 subscriptionId, bytes32 donId, uint32 callbackGasLimit);
+    event MarketsUpdated(uint256 count);
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -160,6 +161,26 @@ contract AmmoPriceFunctions is FunctionsClient, AutomationCompatibleInterface {
         donId = donId_;
         callbackGasLimit = callbackGasLimit_;
         emit ConfigUpdated(subscriptionId_, donId_, callbackGasLimit_);
+    }
+
+    /// @notice Replace the tracked (market, caliberKey) list.
+    /// @dev Call after AmmoFactory.createCaliber adds a new caliber, or to
+    ///      retire one. If a Functions request is already in flight when this
+    ///      runs, that callback uses the new list and will revert at the oracle
+    ///      if the DON response length no longer matches — one update lost,
+    ///      next request recovers.
+    function setMarkets(address[] calldata markets_, string[] calldata caliberKeys_) external onlyOwner {
+        if (markets_.length != caliberKeys_.length) revert ArrayLengthMismatch();
+
+        delete marketAddresses;
+        delete caliberKeys;
+
+        for (uint256 i; i < markets_.length; ++i) {
+            marketAddresses.push(markets_[i]);
+            caliberKeys.push(caliberKeys_[i]);
+        }
+
+        emit MarketsUpdated(markets_.length);
     }
 
     /// @notice Returns the number of calibers tracked.
