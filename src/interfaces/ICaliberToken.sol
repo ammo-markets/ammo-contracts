@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/// @title IAmmoToken
+/// @title ICaliberToken
 /// @notice Interface for the ERC20 token with market-restricted mint/burn and fee-on-transfer tax.
-interface IAmmoToken {
+interface ICaliberToken {
     // ── Errors ───────────────────────────────────────
 
     error NotMarket();

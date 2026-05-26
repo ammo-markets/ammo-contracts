@@ -1,6 +1,6 @@
 # Ammo Markets — Smart Contracts
 
-DeFi protocol for tokenized ammunition trading on Avalanche C-Chain. Users escrow USDC in a keeper-finalized mint flow to receive per-caliber ammo tokens (e.g., 9mm Practice, 5.56 NATO), redeem tokens for real-world ammo fulfillment, or request a USDC exit through a shared liquidity pool. The protocol includes fee-on-transfer taxes for DEX trades, Chainlink-powered price feeds, and a capped emission system for LP farming incentives.
+DeFi protocol for tokenized ammunition trading on Avalanche C-Chain. Users escrow USDC in a keeper-finalized mint flow to receive per-caliber ammo tokens (e.g., 9mm Practice, 5.56 NATO), redeem tokens for real-world ammo fulfillment, or request a USDC exit through a shared liquidity pool. The protocol includes fee-on-transfer taxes for DEX trades, a keeper-updated on-chain price oracle, and a capped emission system for LP farming incentives.
 
 - **Solidity:** 0.8.24
 - **Framework:** [Foundry](https://book.getfoundry.sh/)
@@ -23,7 +23,7 @@ forge build
 forge test
 ```
 
-No environment variables are needed to build or run most tests — they use local mocks. The exception is `AmmoTokenTaxFork.t.sol`, which forks Avalanche mainnet to test tax behavior against a real DEX. These 5 tests are skipped automatically if `AVALANCHE_RPC_URL` is not set.
+No environment variables are needed to build or run most tests — they use local mocks. The exception is `CaliberTokenTaxFork.t.sol`, which forks Avalanche mainnet to test tax behavior against a real DEX. These 5 tests are skipped automatically if `AVALANCHE_RPC_URL` is not set.
 
 ### Environment Variables
 
@@ -34,7 +34,6 @@ Copy `.env.example` to `.env`:
 | `FUJI_RPC_URL` | Testnet deploy | Avalanche Fuji C-Chain RPC |
 | `AVALANCHE_RPC_URL` | Mainnet deploy | Avalanche Mainnet C-Chain RPC |
 | `PRIVATE_KEY` | All deploys | Deployer EOA private key |
-| `LIQUIDITY_SOURCE` | Mainnet deploy | Wallet the shared exit pool can pull USDT shortfalls from |
 | `SNOWTRACE_API_KEY` | Verification | Avascan API key for contract verification |
 
 ## Core Contracts
@@ -44,12 +43,9 @@ AmmoManager                          Central admin — roles, tax config, denyli
   │
   ├── AmmoFactory                    Deploys per-caliber market + token pairs
   │     └── CaliberMarket            Mint/redeem/exit order book per caliber
-  │           └── AmmoToken          ERC20 with fee-on-transfer tax
-  │
-  ├── ExitLiquidityPool              Shared USDC/USDT pool for exit settlement
+  │           └── CaliberToken          ERC20 with fee-on-transfer tax
   │
   ├── PriceOracle                    Per-market price storage (keeper-updated)
-  │     └── AmmoPriceFunctions       Chainlink Functions consumer (auto-updates oracle)
   │
   ├── ProtocolToken                  Protocol incentive token
   │     └── ProtocolEmissionController   Supply cap + emission logic
@@ -63,10 +59,9 @@ The most important files for understanding the protocol:
 | Contract | File | What It Does |
 |----------|------|-------------|
 | **AmmoManager** | `src/AmmoManager.sol` | Global config hub. All contracts read roles (owner, keeper, guardian), tax rates, and the transfer denylist from here. |
-| **CaliberMarket** | `src/CaliberMarket.sol` | Where users interact. 2-step mint (USDC escrow → keeper finalizes), 2-step redeem for real-world ammo fulfillment, and 2-step exit (tokens locked → shared pool pays USDC/USDT). |
-| **ExitLiquidityPool** | `src/ExitLiquidityPool.sol` | Shared exit settlement pool. Authorized markets pay users from pool balance first, then pull only shortfalls from a configured liquidity source wallet. |
-| **AmmoToken** | `src/AmmoToken.sol` | Per-caliber ERC20 with buy/sell tax on DEX trades. Taxes accumulate and auto-swap to WAVAX → treasury. Only its CaliberMarket can mint/burn. |
-| **PriceOracle** | `src/PriceOracle.sol` | Stores per-market prices at 1e18 scale. Keepers update manually or via Chainlink automation. CaliberMarket rejects prices older than 6 hours. |
+| **CaliberMarket** | `src/CaliberMarket.sol` | Where users interact. 2-step mint (USDC escrow → keeper finalizes), 2-step redeem for real-world ammo fulfillment, and 2-step exit (tokens locked → keeper pays USDC/USDT directly on finalize). |
+| **CaliberToken** | `src/CaliberToken.sol` | Per-caliber ERC20 with buy/sell tax on DEX trades. Taxes accumulate and auto-swap to WAVAX → treasury. Only its CaliberMarket can mint/burn. |
+| **PriceOracle** | `src/PriceOracle.sol` | Stores per-market prices at 1e18 scale. An off-chain keeper (worker) batches updates via `setBatchPrices`. CaliberMarket rejects prices older than 6 hours. |
 | **ProtocolEmissionController** | `src/ProtocolEmissionController.sol` | Caps and controls all protocol token emissions — farm rewards (time-decaying) and treasury rewards (volume-based). |
 | **AmmoMarketLPFarm** | `src/AmmoMarketLPFarm.sol` | Equal-weight LP staking with linearly decaying emissions. Based on SushiSwap MasterChef v1 — see details below. |
 
@@ -76,7 +71,6 @@ Contracts must be deployed in a specific order due to cross-references and one-t
 
 - **Testnet:** `script/DeployFuji.s.sol`
 - **Mainnet:** `script/DeployMainnet.s.sol`
-- **Chainlink Functions:** `script/DeployChainlinkFunctions.s.sol`
 
 Deploy commands use the `Makefile`:
 
@@ -133,18 +127,16 @@ Uses the standard MasterChef `accRewardPerShare` / `rewardDebt` pattern:
 | Reentrancy guard | CaliberMarket, AmmoMarketLPFarm | `_locked` flag on state-changing user calls |
 | 2-step ownership | AmmoManager | Pending owner must `acceptOwnership()` |
 | Set-once initialization | ProtocolToken, AmmoFactory | Prevents re-wiring after deploy |
-| Denylist | AmmoToken | Blocks bridging/export of tokens |
+| Denylist | CaliberToken | Blocks bridging/export of tokens |
 | Price staleness | CaliberMarket | Rejects oracle prices older than 6 hours |
-| Safe ERC20 transfers | CaliberMarket, ExitLiquidityPool, AmmoToken | Low-level call pattern for non-standard tokens |
-| Try/catch tax swap | AmmoToken | DEX failures never revert user transfers |
-| Graceful oracle errors | AmmoPriceFunctions | Chainlink DON failures emit events, don't revert |
+| Safe ERC20 transfers | CaliberMarket, CaliberToken | Low-level call pattern for non-standard tokens |
+| Try/catch tax swap | CaliberToken | DEX failures never revert user transfers |
 
 ### Dependencies
 
 | Dependency | Purpose |
 |------------|---------|
 | [forge-std](https://github.com/foundry-rs/forge-std) | Foundry test framework |
-| [chainlink-brownie-contracts](https://github.com/smartcontractkit/chainlink-brownie-contracts) | Chainlink Functions + Automation interfaces |
 
 ### Chain Info
 

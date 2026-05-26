@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+interface IGvAmmo {
+    function balanceOf(address account) external view returns (uint256);
+
+    function totalSupply() external view returns (uint256);
+}
+
 /// @notice Global ops/admin, role registry, and centralized tax configuration for the Ammo Exchange protocol.
-/// @dev All CaliberMarket and AmmoToken instances reference this contract for access control and tax config.
+/// @dev All CaliberMarket and CaliberToken instances reference this contract for access control and tax config.
 ///      Owner should be a multisig in production.
 contract AmmoManager {
     // ── Structs ─────────────────────────────────────
@@ -61,7 +67,13 @@ contract AmmoManager {
     /// @notice Protocol-wide tax-exempt addresses (staking, vesting, etc.).
     mapping(address => bool) public taxExempt;
 
-    /// @notice Protocol-wide transfer denylist. AmmoTokens revert any transfer
+    /// @notice Optional gvAMMO token used to exempt sufficiently staked users from DEX transfer tax.
+    address public gvAmmo;
+
+    /// @notice Required share of gvAMMO total supply, in basis points.
+    uint256 public gvAmmoTaxExemptionBps;
+
+    /// @notice Protocol-wide transfer denylist. CaliberTokens revert any transfer
     ///         where `from` or `to` is denied. Used to block bridges and other
     ///         destinations the protocol does not allow ammo tokens to leave through.
     mapping(address => bool) public isDenied;
@@ -91,6 +103,7 @@ contract AmmoManager {
     event TaxSwapThresholdUpdated(address indexed token, uint256 threshold);
     event TaxSwapSlippageUpdated(uint256 oldBps, uint256 newBps);
     event TaxExemptUpdated(address indexed account, bool exempt);
+    event gvAmmoUpdated(address indexed gvAmmo, uint256 thresholdBps);
     event DeniedUpdated(address indexed account, bool denied);
 
     // ── Modifiers ───────────────────────────────────
@@ -182,7 +195,7 @@ contract AmmoManager {
     }
 
     /// @notice Set buy/sell tax rates for a specific token's DEX pool.
-    /// @param token The AmmoToken address.
+    /// @param token The CaliberToken address.
     /// @param pool The DEX pair address.
     /// @param buyBps Buy tax in basis points (max 1000 = 10%).
     /// @param sellBps Sell tax in basis points (max 1000 = 10%).
@@ -196,7 +209,7 @@ contract AmmoManager {
     }
 
     /// @notice Configure the DEX swap path for a token's auto-swap.
-    /// @param token The AmmoToken address.
+    /// @param token The CaliberToken address.
     /// @param outputToken The token to receive before the router unwraps to native ETH/AVAX.
     /// @param stable Whether to route through the stable pair.
     function setSwapPath(address token, address outputToken, bool stable) external onlyOwner {
@@ -227,8 +240,16 @@ contract AmmoManager {
         emit TaxExemptUpdated(account, exempt);
     }
 
+    /// @notice Configure gvAMMO-based DEX tax exemption. Set gvAMMO or bps to zero to disable.
+    function setGvAmmo(address gvAmmo_, uint256 thresholdBps) external onlyOwner {
+        if (thresholdBps > 10_000) revert TaxTooHigh();
+        gvAmmo = gvAmmo_;
+        gvAmmoTaxExemptionBps = thresholdBps;
+        emit gvAmmoUpdated(gvAmmo_, thresholdBps);
+    }
+
     /// @notice Add or remove a protocol-wide transfer denial. Denied addresses
-    ///         cannot be the `from` or `to` of any AmmoToken transfer. Used to
+    ///         cannot be the `from` or `to` of any CaliberToken transfer. Used to
     ///         block bridges and other destinations the protocol does not allow
     ///         ammo tokens to leave through.
     function setDenied(address account, bool denied) external onlyOwner {
@@ -238,7 +259,7 @@ contract AmmoManager {
     }
 
     // ══════════════════════════════════════════════════
-    // ── Tax View Functions (called by AmmoToken) ─────
+    // ── Tax View Functions (called by CaliberToken) ─────
     // ══════════════════════════════════════════════════
 
     /// @notice Get all swap configuration a token needs to execute _sellTaxes().
@@ -255,6 +276,25 @@ contract AmmoManager {
         )
     {
         return (dexRouter, wavax, swapPaths[token], taxSwapThresholds[token], taxSwapSlippageBps, treasury);
+    }
+
+    /// @notice Whether an account owns enough gvAMMO voting power share to avoid DEX tax.
+    function isGvAmmoTaxExempt(address account) external view returns (bool) {
+        address gvAmmo_ = gvAmmo;
+        uint256 thresholdBps = gvAmmoTaxExemptionBps;
+        if (gvAmmo_ == address(0) || thresholdBps == 0) return false;
+
+        try IGvAmmo(gvAmmo_).balanceOf(account) returns (uint256 gvBalance) {
+            if (gvBalance == 0) return false;
+            try IGvAmmo(gvAmmo_).totalSupply() returns (uint256 gvSupply) {
+                if (gvSupply == 0) return false;
+                return (gvBalance * 10_000) >= (gvSupply * thresholdBps);
+            } catch {
+                return false;
+            }
+        } catch {
+            return false;
+        }
     }
 
     // ══════════════════════════════════════════════════

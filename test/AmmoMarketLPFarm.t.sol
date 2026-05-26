@@ -81,6 +81,25 @@ contract AmmoMarketLPFarmTest is Test {
         lowCapFarm.addPool(CALIBER_9MM, address(lp9mm));
     }
 
+    function _cappedTwoPoolFarm(uint256 cap) internal returns (AmmoMarketLPFarm lowCapFarm) {
+        lowCapFarm = new AmmoMarketLPFarm(
+            address(manager), address(emissionController), address(reward), duration, startRewardPerDay, cap
+        );
+
+        vm.startPrank(alice);
+        lp9mm.approve(address(lowCapFarm), type(uint256).max);
+        lp556.approve(address(lowCapFarm), type(uint256).max);
+        vm.stopPrank();
+
+        vm.startPrank(bob);
+        lp9mm.approve(address(lowCapFarm), type(uint256).max);
+        lp556.approve(address(lowCapFarm), type(uint256).max);
+        vm.stopPrank();
+
+        lowCapFarm.addPool(CALIBER_9MM, address(lp9mm));
+        lowCapFarm.addPool(CALIBER_556, address(lp556));
+    }
+
     function testTotalProgramRewardsIsTriangularEmission() public view {
         assertEq(farm.totalProgramRewards(), 5_000e18);
     }
@@ -372,6 +391,40 @@ contract AmmoMarketLPFarmTest is Test {
 
         assertEq(lowCapFarm.totalFarmAccrued(), 500e18);
         assertEq(lowCapFarm.pendingRewards(0, alice), 500e18);
+    }
+
+    function testNearFarmCapRewardsAreSplitAcrossPendingPools() public {
+        AmmoMarketLPFarm pool0FirstFarm = _cappedTwoPoolFarm(475e18);
+        AmmoMarketLPFarm pool1FirstFarm = _cappedTwoPoolFarm(475e18);
+
+        vm.prank(alice);
+        pool0FirstFarm.deposit(0, 10e18);
+        vm.prank(bob);
+        pool0FirstFarm.deposit(1, 10e18);
+
+        vm.prank(alice);
+        pool1FirstFarm.deposit(0, 10e18);
+        vm.prank(bob);
+        pool1FirstFarm.deposit(1, 10e18);
+
+        vm.warp(startTime + 1 days);
+
+        assertEq(pool0FirstFarm.pendingRewards(0, alice), 237.5e18);
+        assertEq(pool0FirstFarm.pendingRewards(1, bob), 237.5e18);
+
+        pool0FirstFarm.updatePool(0);
+        pool0FirstFarm.updatePool(1);
+
+        assertEq(pool0FirstFarm.pendingRewards(0, alice), 237.5e18);
+        assertEq(pool0FirstFarm.pendingRewards(1, bob), 237.5e18);
+        assertEq(pool0FirstFarm.totalFarmAccrued(), 475e18);
+
+        pool1FirstFarm.updatePool(1);
+        pool1FirstFarm.updatePool(0);
+
+        assertEq(pool1FirstFarm.pendingRewards(0, alice), 237.5e18);
+        assertEq(pool1FirstFarm.pendingRewards(1, bob), 237.5e18);
+        assertEq(pool1FirstFarm.totalFarmAccrued(), 475e18);
     }
 
     function testDisablingOneOfTwoPoolsGivesRemainingPoolFullEmissionUntilReactivation() public {

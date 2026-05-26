@@ -3,25 +3,47 @@ pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
 import "../src/AmmoManager.sol";
-import "../src/AmmoToken.sol";
+import "../src/CaliberToken.sol";
 import "../src/AmmoLiquidityManager.sol";
 import "../src/CaliberMarket.sol";
-import "../src/ExitLiquidityPool.sol";
 import "./MockDexRouter.sol";
 import "./MockPriceOracle.sol";
 import "./MockERC20.sol";
 import "./MockEmissionController.sol";
 
-contract AmmoTokenTaxTest is Test {
+contract MockGvAmmo {
+    mapping(address => uint256) internal balances;
+    uint256 public totalSupply;
+    bool public shouldRevert;
+
+    function setBalance(address account, uint256 amount) external {
+        balances[account] = amount;
+    }
+
+    function setTotalSupply(uint256 amount) external {
+        totalSupply = amount;
+    }
+
+    function setShouldRevert(bool value) external {
+        shouldRevert = value;
+    }
+
+    function balanceOf(address account) external view returns (uint256) {
+        require(!shouldRevert, "gv balance unavailable");
+        return balances[account];
+    }
+}
+
+contract CaliberTokenTaxTest is Test {
     AmmoManager manager;
     CaliberMarket market;
-    AmmoToken token;
+    CaliberToken token;
     MockDexRouter router;
     AmmoLiquidityManager liquidityManager;
     MockERC20 usdc;
     MockPriceOracle oracle;
     MockEmissionController emissionController;
-    ExitLiquidityPool exitLiquidityPool;
+    MockGvAmmo gvAmmo;
 
     address owner = address(this);
     address user = address(0xBEEF);
@@ -29,7 +51,6 @@ contract AmmoTokenTaxTest is Test {
     address pool = address(0xDEE1); // simulated DEX pair
     address treasury = address(0x73EA5);
     address feeRecipient = address(0xFEE1);
-    address liquiditySource = address(0x5150);
     address wavax = address(0xAA0C);
 
     bytes32 constant CALIBER_9MM = bytes32("9MM");
@@ -43,12 +64,12 @@ contract AmmoTokenTaxTest is Test {
         router = new MockDexRouter(wavax);
         liquidityManager = new AmmoLiquidityManager(address(router));
         emissionController = new MockEmissionController(address(new MockERC20("Protocol", "AMMO", 18)));
+        gvAmmo = new MockGvAmmo();
 
         manager = new AmmoManager(feeRecipient, wavax);
         manager.setTreasury(treasury);
         manager.setDexRouter(address(router));
         manager.setTaxExempt(address(liquidityManager), true);
-        exitLiquidityPool = new ExitLiquidityPool(address(manager), address(usdc), liquiditySource);
 
         market = new CaliberMarket(
             CaliberMarket.MarketConfig({
@@ -57,13 +78,9 @@ contract AmmoTokenTaxTest is Test {
                 usdcDecimals: 6,
                 oracle: address(oracle),
                 emissionController: address(emissionController),
-                exitLiquidityPool: address(exitLiquidityPool),
                 caliberId: CALIBER_9MM,
                 tokenName: "Ammo 9MM",
                 tokenSymbol: "MO9MM",
-                mintFeeBps: 150,
-                redeemFeeBps: 150,
-                exitFeeBps: 0,
                 minMintRounds: 50
             })
         );
@@ -114,10 +131,10 @@ contract AmmoTokenTaxTest is Test {
         uint256 expectedReceive = amount - expectedTax;
 
         vm.expectEmit(true, true, false, true);
-        emit AmmoToken.Transfer(pool, user, expectedReceive);
+        emit CaliberToken.Transfer(pool, user, expectedReceive);
 
         vm.expectEmit(true, true, false, true);
-        emit AmmoToken.Transfer(pool, address(token), expectedTax);
+        emit CaliberToken.Transfer(pool, address(token), expectedTax);
 
         vm.prank(pool);
         token.transfer(user, amount);
@@ -216,6 +233,118 @@ contract AmmoTokenTaxTest is Test {
         token.transfer(pool, 50e18);
         assertEq(token.balanceOf(pool) - poolBefore, 50e18, "Pool gets full amount");
         assertEq(token.balanceOf(address(token)), taxBefore, "No tax collected");
+    }
+
+    function testGvAmmoTaxExemptionDisabledByDefaultDoesNotChangeSellTax() public {
+        uint256 amount = 100e18;
+        gvAmmo.setBalance(user, amount);
+        gvAmmo.setTotalSupply(10_000e18);
+
+        uint256 poolBefore = token.balanceOf(pool);
+        uint256 taxBefore = token.balanceOf(address(token));
+
+        vm.prank(user);
+        token.transfer(pool, amount);
+
+        assertEq(token.balanceOf(pool) - poolBefore, amount - ((amount * SELL_TAX) / 10_000));
+        assertEq(token.balanceOf(address(token)) - taxBefore, (amount * SELL_TAX) / 10_000);
+    }
+
+    function testGvAmmoTaxExemptSellerPaysNoSellTax() public {
+        uint256 amount = 100e18;
+        manager.setGvAmmo(address(gvAmmo), 100); // requires 1% of gvAmmo supply
+        gvAmmo.setTotalSupply(1_000e18);
+        gvAmmo.setBalance(user, 10e18);
+
+        uint256 poolBefore = token.balanceOf(pool);
+        uint256 taxBefore = token.balanceOf(address(token));
+
+        vm.prank(user);
+        token.transfer(pool, amount);
+
+        assertEq(token.balanceOf(pool) - poolBefore, amount);
+        assertEq(token.balanceOf(address(token)), taxBefore);
+    }
+
+    function testGvAmmoTaxExemptionIsIndependentOfSwapSize() public {
+        uint256 amount = 250e18;
+        manager.setGvAmmo(address(gvAmmo), 100);
+        gvAmmo.setTotalSupply(1_000e18);
+        gvAmmo.setBalance(user, 10e18);
+
+        uint256 poolBefore = token.balanceOf(pool);
+        uint256 taxBefore = token.balanceOf(address(token));
+
+        vm.prank(user);
+        token.transfer(pool, amount);
+
+        assertEq(token.balanceOf(pool) - poolBefore, amount);
+        assertEq(token.balanceOf(address(token)), taxBefore);
+    }
+
+    function testGvAmmoTaxExemptBuyerPaysNoBuyTax() public {
+        uint256 amount = 50e18;
+        manager.setGvAmmo(address(gvAmmo), 100);
+        gvAmmo.setTotalSupply(1_000e18);
+        gvAmmo.setBalance(user, 10e18);
+
+        uint256 userBefore = token.balanceOf(user);
+        uint256 taxBefore = token.balanceOf(address(token));
+
+        vm.prank(pool);
+        token.transfer(user, amount);
+
+        assertEq(token.balanceOf(user) - userBefore, amount);
+        assertEq(token.balanceOf(address(token)), taxBefore);
+    }
+
+    function testGvAmmoTaxExemptionRequiresEnoughSupplyShare() public {
+        uint256 amount = 100e18;
+        manager.setGvAmmo(address(gvAmmo), 100);
+        gvAmmo.setTotalSupply(1_000e18);
+        gvAmmo.setBalance(user, 10e18 - 1);
+
+        uint256 poolBefore = token.balanceOf(pool);
+        uint256 taxBefore = token.balanceOf(address(token));
+
+        vm.prank(user);
+        token.transfer(pool, amount);
+
+        assertEq(token.balanceOf(pool) - poolBefore, amount - ((amount * SELL_TAX) / 10_000));
+        assertEq(token.balanceOf(address(token)) - taxBefore, (amount * SELL_TAX) / 10_000);
+    }
+
+    function testGvAmmoTaxExemptionOnlyChecksTraderNotPool() public {
+        uint256 amount = 100e18;
+        manager.setGvAmmo(address(gvAmmo), 100);
+        gvAmmo.setTotalSupply(1_000e18);
+        gvAmmo.setBalance(pool, type(uint256).max);
+
+        uint256 poolBefore = token.balanceOf(pool);
+        uint256 taxBefore = token.balanceOf(address(token));
+
+        vm.prank(user);
+        token.transfer(pool, amount);
+
+        assertEq(token.balanceOf(pool) - poolBefore, amount - ((amount * SELL_TAX) / 10_000));
+        assertEq(token.balanceOf(address(token)) - taxBefore, (amount * SELL_TAX) / 10_000);
+    }
+
+    function testGvAmmoTaxExemptionFailsClosedIfBalanceCallReverts() public {
+        uint256 amount = 100e18;
+        manager.setGvAmmo(address(gvAmmo), 100);
+        gvAmmo.setTotalSupply(1_000e18);
+        gvAmmo.setBalance(user, type(uint256).max);
+        gvAmmo.setShouldRevert(true);
+
+        uint256 poolBefore = token.balanceOf(pool);
+        uint256 taxBefore = token.balanceOf(address(token));
+
+        vm.prank(user);
+        token.transfer(pool, amount);
+
+        assertEq(token.balanceOf(pool) - poolBefore, amount - ((amount * SELL_TAX) / 10_000));
+        assertEq(token.balanceOf(address(token)) - taxBefore, (amount * SELL_TAX) / 10_000);
     }
 
     function testDirectAddLiquidityTokenTransferIsTaxed() public {
@@ -481,6 +610,28 @@ contract AmmoTokenTaxTest is Test {
     function testSetTaxSwapSlippageBpsRejectsTooHigh() public {
         vm.expectRevert(AmmoManager.TaxTooHigh.selector);
         manager.setTaxSwapSlippageBps(5_001);
+    }
+
+    function testSetGvAmmoStoresConfigAndAllowsDisable() public {
+        vm.expectEmit(true, false, false, true);
+        emit AmmoManager.gvAmmoUpdated(address(gvAmmo), 2_000);
+        manager.setGvAmmo(address(gvAmmo), 2_000);
+
+        assertEq(manager.gvAmmo(), address(gvAmmo));
+        assertEq(manager.gvAmmoTaxExemptionBps(), 2_000);
+
+        manager.setGvAmmo(address(0), 0);
+        assertEq(manager.gvAmmo(), address(0));
+        assertEq(manager.gvAmmoTaxExemptionBps(), 0);
+    }
+
+    function testSetGvAmmoOnlyOwnerAndMaxBps() public {
+        vm.prank(user);
+        vm.expectRevert(AmmoManager.NotOwner.selector);
+        manager.setGvAmmo(address(gvAmmo), 2_000);
+
+        vm.expectRevert(AmmoManager.TaxTooHigh.selector);
+        manager.setGvAmmo(address(gvAmmo), 10_001);
     }
 
     // ═══════════════════════════════════════════════

@@ -6,7 +6,6 @@ import "../src/AmmoFactory.sol";
 import "../src/AmmoManager.sol";
 import "../src/AmmoMarketLPFarm.sol";
 import "../src/CaliberMarket.sol";
-import "../src/ExitLiquidityPool.sol";
 import "../src/PriceOracle.sol";
 import "../src/ProtocolEmissionController.sol";
 import "../src/ProtocolToken.sol";
@@ -18,14 +17,12 @@ contract ProtocolEmissionControllerTest is Test {
     PriceOracle oracle;
     ProtocolToken protocolToken;
     ProtocolEmissionController controller;
-    ExitLiquidityPool exitLiquidityPool;
     MockERC20 usdc;
     MockERC20 lpToken;
 
     address treasury = address(0x73EA5);
     address feeRecipient = address(0xFEE1);
     address user = address(0xBEEF);
-    address liquiditySource = address(0x5150);
     address wavax = address(0xAA0C);
 
     uint256 constant FARM_CAP = 365_000_000e18;
@@ -40,9 +37,7 @@ contract ProtocolEmissionControllerTest is Test {
         usdc = new MockERC20("USD Coin", "USDC", 6);
         lpToken = new MockERC20("LP", "LP", 18);
         oracle = new PriceOracle(address(manager));
-        exitLiquidityPool = new ExitLiquidityPool(address(manager), address(usdc), liquiditySource);
-        factory = new AmmoFactory(address(manager), address(usdc), 6, address(oracle), address(exitLiquidityPool));
-        exitLiquidityPool.setFactory(address(factory));
+        factory = new AmmoFactory(address(manager), address(usdc), 6, address(oracle));
 
         protocolToken = new ProtocolToken("Ammo Protocol", "AMMO", address(manager));
         controller = new ProtocolEmissionController(
@@ -55,7 +50,7 @@ contract ProtocolEmissionControllerTest is Test {
     }
 
     function testCaliberMintMintsTreasuryShareFromUsdcVolume() public {
-        (address market,) = factory.createCaliber(bytes32("9MM"), "Ammo 9MM", "MO9MM", 150, 150, 0, 0);
+        (address market,) = factory.createCaliber(bytes32("9MM"), "Ammo 9MM", "MO9MM", 0);
         manager.setMarketDailyMintCap(market, type(uint256).max);
         oracle.setPrice(market, ORACLE_PRICE);
 
@@ -75,7 +70,7 @@ contract ProtocolEmissionControllerTest is Test {
     }
 
     function testTreasuryMintCapsAtVolumeTarget() public {
-        (address market,) = factory.createCaliber(bytes32("9MM"), "Ammo 9MM", "MO9MM", 150, 150, 0, 0);
+        (address market,) = factory.createCaliber(bytes32("9MM"), "Ammo 9MM", "MO9MM", 0);
         manager.setMarketDailyMintCap(market, type(uint256).max);
         oracle.setPrice(market, ORACLE_PRICE);
 
@@ -93,7 +88,7 @@ contract ProtocolEmissionControllerTest is Test {
     }
 
     function testAdditionalCaliberMintAfterTreasuryCapDoesNotRevertOrMintMore() public {
-        (address market,) = factory.createCaliber(bytes32("9MM"), "Ammo 9MM", "MO9MM", 150, 150, 0, 0);
+        (address market,) = factory.createCaliber(bytes32("9MM"), "Ammo 9MM", "MO9MM", 0);
         manager.setMarketDailyMintCap(market, type(uint256).max);
         oracle.setPrice(market, ORACLE_PRICE);
 
@@ -120,7 +115,7 @@ contract ProtocolEmissionControllerTest is Test {
     }
 
     function testPostCapControllerRecordDoesNotRequireTreasuryAddress() public {
-        (address market,) = factory.createCaliber(bytes32("9MM"), "Ammo 9MM", "MO9MM", 150, 150, 0, 0);
+        (address market,) = factory.createCaliber(bytes32("9MM"), "Ammo 9MM", "MO9MM", 0);
         manager.setMarketDailyMintCap(market, type(uint256).max);
         oracle.setPrice(market, ORACLE_PRICE);
 

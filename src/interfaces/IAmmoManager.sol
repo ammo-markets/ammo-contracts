@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 /// @title IAmmoManager
 /// @notice Interface for the global ops/admin, role registry, and centralized tax configuration.
-/// @dev All CaliberMarket and AmmoToken instances reference this contract.
+/// @dev All CaliberMarket and CaliberToken instances reference this contract.
 interface IAmmoManager {
     // ── Structs ─────────────────────────────────────
 

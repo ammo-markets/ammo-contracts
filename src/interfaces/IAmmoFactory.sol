@@ -2,7 +2,7 @@
 pragma solidity ^0.8.24;
 
 /// @title IAmmoFactory
-/// @notice Interface for the factory that deploys per-caliber CaliberMarket + AmmoToken pairs.
+/// @notice Interface for the factory that deploys per-caliber CaliberMarket + CaliberToken pairs.
 interface IAmmoFactory {
     // ── Structs ──────────────────────────────────────
 
@@ -27,7 +27,6 @@ interface IAmmoFactory {
     function usdc() external view returns (address);
     function usdcDecimals() external view returns (uint8);
     function oracle() external view returns (address);
-    function exitLiquidityPool() external view returns (address);
     function calibers(bytes32 caliberId) external view returns (address market, address token);
     function caliberIds(uint256 index) external view returns (bytes32);
     function getCaliberCount() external view returns (uint256);
@@ -36,14 +35,11 @@ interface IAmmoFactory {
 
     /// @notice Deploy a new caliber market + token pair.
     /// @return market The deployed CaliberMarket address.
-    /// @return token  The deployed AmmoToken address (created by the market).
+    /// @return token  The deployed CaliberToken address (created by the market).
     function createCaliber(
         bytes32 caliberId,
         string calldata name,
         string calldata symbol,
-        uint256 mintFeeBps,
-        uint256 redeemFeeBps,
-        uint256 exitFeeBps,
         uint256 minMintRounds
     ) external returns (address market, address token);
 }

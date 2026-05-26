@@ -9,7 +9,7 @@ import {ISolidlyPair} from "./interfaces/ISolidlyPair.sol";
 /// @notice ERC20 token with fee-on-transfer tax for DEX trades.
 /// @dev Mint/burn restricted to its CaliberMarket. Tax config is read from AmmoManager.
 ///      Accumulated taxes are auto-swapped to native AVAX via the configured DEX router.
-contract AmmoToken {
+contract CaliberToken {
     string public name;
     string public symbol;
     uint8 public constant decimals = 18;
@@ -97,7 +97,7 @@ contract AmmoToken {
         uint256 taxAmount = 0;
 
         if (!_inSwap && !_isLocalExempt(from, to)) {
-            bool protocolExempt = manager.taxExempt(from) || manager.taxExempt(to);
+            bool protocolExempt = manager.taxExempt(from) || manager.taxExempt(to) || _isGvAmmoTaxExempt(from, to);
             if (protocolExempt) {
                 taxAmount = 0;
             } else {
@@ -134,6 +134,16 @@ contract AmmoToken {
         if (sellBps > 0) return (amount * sellBps) / _BPS_DIVISOR;
 
         return 0;
+    }
+
+    function _isGvAmmoTaxExempt(address from, address to) internal view returns (bool) {
+        (uint256 buyBps,) = manager.tokenPoolTax(address(this), from);
+        if (buyBps > 0) return manager.isGvAmmoTaxExempt(to);
+
+        (, uint256 sellBps) = manager.tokenPoolTax(address(this), to);
+        if (sellBps > 0) return manager.isGvAmmoTaxExempt(from);
+
+        return false;
     }
 
     /// @dev Check token-local exemptions (no storage reads for cheapest checks).
@@ -177,7 +187,7 @@ contract AmmoToken {
 
         uint256 amountOutMin = (twapOut * (_BPS_DIVISOR - slippageBps)) / _BPS_DIVISOR;
 
-        // Build DEX path: AmmoToken -> WAVAX. The router unwraps WAVAX to native AVAX.
+        // Build DEX path: CaliberToken -> WAVAX. The router unwraps WAVAX to native AVAX.
         IDexRouter.route[] memory routes = new IDexRouter.route[](1);
         routes[0] = IDexRouter.route({from: address(this), to: wavax_, stable: swapPath.stable});
 

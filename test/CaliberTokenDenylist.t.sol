@@ -3,27 +3,25 @@ pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
 import "../src/AmmoManager.sol";
-import "../src/AmmoToken.sol";
+import "../src/CaliberToken.sol";
 import "../src/AmmoLiquidityManager.sol";
 import "../src/CaliberMarket.sol";
-import "../src/ExitLiquidityPool.sol";
 import "./MockDexRouter.sol";
 import "./MockPriceOracle.sol";
 import "./MockERC20.sol";
 import "./MockEmissionController.sol";
 
-/// @notice Verifies the AmmoManager.isDenied denylist short-circuits AmmoToken
+/// @notice Verifies the AmmoManager.isDenied denylist short-circuits CaliberToken
 ///         transfers in both directions and takes precedence over tax/exempt logic.
-contract AmmoTokenDenylistTest is Test {
+contract CaliberTokenDenylistTest is Test {
     AmmoManager manager;
     CaliberMarket market;
-    AmmoToken token;
+    CaliberToken token;
     MockDexRouter router;
     AmmoLiquidityManager liquidityManager;
     MockERC20 usdc;
     MockPriceOracle oracle;
     MockEmissionController emissionController;
-    ExitLiquidityPool exitLiquidityPool;
 
     address user = address(0xBEEF);
     address user2 = address(0xCAFE);
@@ -31,7 +29,6 @@ contract AmmoTokenDenylistTest is Test {
     address pool = address(0xDEE1); // simulated DEX pair
     address treasury = address(0x73EA5);
     address feeRecipient = address(0xFEE1);
-    address liquiditySource = address(0x5150);
     address wavax = address(0xAA0C);
 
     bytes32 constant CALIBER_9MM = bytes32("9MM");
@@ -49,7 +46,6 @@ contract AmmoTokenDenylistTest is Test {
         manager = new AmmoManager(feeRecipient, wavax);
         manager.setTreasury(treasury);
         manager.setDexRouter(address(router));
-        exitLiquidityPool = new ExitLiquidityPool(address(manager), address(usdc), liquiditySource);
 
         market = new CaliberMarket(
             CaliberMarket.MarketConfig({
@@ -58,13 +54,9 @@ contract AmmoTokenDenylistTest is Test {
                 usdcDecimals: 6,
                 oracle: address(oracle),
                 emissionController: address(emissionController),
-                exitLiquidityPool: address(exitLiquidityPool),
                 caliberId: CALIBER_9MM,
                 tokenName: "Ammo 9MM",
                 tokenSymbol: "MO9MM",
-                mintFeeBps: 150,
-                redeemFeeBps: 150,
-                exitFeeBps: 0,
                 minMintRounds: 50
             })
         );
@@ -109,7 +101,7 @@ contract AmmoTokenDenylistTest is Test {
         manager.setDenied(bridge, true);
 
         vm.prank(user);
-        vm.expectRevert(AmmoToken.Denied.selector);
+        vm.expectRevert(CaliberToken.Denied.selector);
         token.transfer(bridge, 10e18);
     }
 
@@ -119,7 +111,7 @@ contract AmmoTokenDenylistTest is Test {
         manager.setDenied(pool, true);
 
         vm.prank(user);
-        vm.expectRevert(AmmoToken.Denied.selector);
+        vm.expectRevert(CaliberToken.Denied.selector);
         token.transfer(pool, 50e18);
     }
 
@@ -134,7 +126,7 @@ contract AmmoTokenDenylistTest is Test {
         manager.setDenied(bridge, true);
 
         vm.prank(staking);
-        vm.expectRevert(AmmoToken.Denied.selector);
+        vm.expectRevert(CaliberToken.Denied.selector);
         token.transfer(bridge, 50e18);
     }
 
@@ -152,7 +144,7 @@ contract AmmoTokenDenylistTest is Test {
 
         // Bridge can no longer send the tokens out.
         vm.prank(bridge);
-        vm.expectRevert(AmmoToken.Denied.selector);
+        vm.expectRevert(CaliberToken.Denied.selector);
         token.transfer(user2, 10e18);
     }
 
@@ -165,7 +157,7 @@ contract AmmoTokenDenylistTest is Test {
         manager.setDenied(pool, true);
 
         vm.prank(pool);
-        vm.expectRevert(AmmoToken.Denied.selector);
+        vm.expectRevert(CaliberToken.Denied.selector);
         token.transfer(user2, 10e18);
     }
 
@@ -177,7 +169,7 @@ contract AmmoTokenDenylistTest is Test {
         manager.setDenied(bridge, true);
 
         vm.prank(user);
-        vm.expectRevert(AmmoToken.Denied.selector);
+        vm.expectRevert(CaliberToken.Denied.selector);
         token.transfer(bridge, 10e18);
 
         manager.setDenied(bridge, false);

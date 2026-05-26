@@ -5,7 +5,6 @@ import "forge-std/Script.sol";
 import "../src/PriceOracle.sol";
 import "../src/AmmoManager.sol";
 import "../src/AmmoFactory.sol";
-import "../src/ExitLiquidityPool.sol";
 import "../src/AmmoLiquidityManager.sol";
 import "../src/ProtocolEmissionController.sol";
 import "../src/ProtocolToken.sol";
@@ -19,7 +18,6 @@ import "../src/interfaces/IDexRouter.sol";
 ///        FEE_RECIPIENT  — address that receives mint/redeem fees
 ///        TREASURY       — address that receives USDT from mints
 ///        GUARDIAN       — address that can pause markets
-///        LIQUIDITY_SOURCE — wallet the exit pool can pull USDT shortfalls from
 contract DeployMainnet is Script {
     /// @dev Native USDT on Avalanche C-Chain (6 decimals).
     address constant USDT = 0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7;
@@ -35,7 +33,6 @@ contract DeployMainnet is Script {
     ProtocolToken public protocolToken;
     ProtocolEmissionController public emissionController;
     PriceOracle public oracle;
-    ExitLiquidityPool public exitLiquidityPool;
     AmmoFactory public factory;
 
     uint256 constant FARM_CAP = 365_000_000e18;
@@ -57,7 +54,6 @@ contract DeployMainnet is Script {
         address feeRecipient = vm.envAddress("FEE_RECIPIENT");
         address treasury = vm.envAddress("TREASURY");
         address guardian = vm.envAddress("GUARDIAN");
-        address liquiditySource = vm.envAddress("LIQUIDITY_SOURCE");
 
         vm.startBroadcast();
 
@@ -76,10 +72,8 @@ contract DeployMainnet is Script {
         // 3. Deploy PriceOracle
         oracle = new PriceOracle(address(manager));
 
-        // 4. Deploy shared exit liquidity pool and AmmoFactory pointing to real USDT
-        exitLiquidityPool = new ExitLiquidityPool(address(manager), USDT, liquiditySource);
-        factory = new AmmoFactory(address(manager), USDT, USDT_DECIMALS, address(oracle), address(exitLiquidityPool));
-        exitLiquidityPool.setFactory(address(factory));
+        // 4. Deploy AmmoFactory pointing to real USDT
+        factory = new AmmoFactory(address(manager), USDT, USDT_DECIMALS, address(oracle));
 
         // 5. Deploy protocol emission stack and lock the mint path
         protocolToken = new ProtocolToken("Ammo Protocol", "AMMO", address(manager));
@@ -108,31 +102,28 @@ contract DeployMainnet is Script {
 
     function _deploy9mmPractice() internal {
         (address market, address token) =
-            factory.createCaliber(bytes32("9MM_PRACTICE"), "Ammo Exchange 9mm Practice", "9MM-P", 150, 150, 0, 50);
+            factory.createCaliber(bytes32("9MM_PRACTICE"), "Ammo Markets 9MM-FMJ", "9MM-FMJ", 50);
         manager.setMarketDailyMintCap(market, INITIAL_DAILY_MINT_CAP);
         deployed9mmPractice = CaliberDeployment(market, token);
     }
 
     function _deploy9mmSelfDefense() internal {
-        (address market, address token) = factory.createCaliber(
-            bytes32("9MM_SELF_DEFENSE"), "Ammo Exchange 9mm Self Defense", "9MM-SD", 150, 150, 0, 50
-        );
+        (address market, address token) =
+            factory.createCaliber(bytes32("9MM_SELF_DEFENSE"), "Ammo Markets 9MM-JHP", "9MM-JHP", 50);
         manager.setMarketDailyMintCap(market, INITIAL_DAILY_MINT_CAP);
         deployed9mmSelfDefense = CaliberDeployment(market, token);
     }
 
     function _deploy556SelfDefense() internal {
-        (address market, address token) = factory.createCaliber(
-            bytes32("556_SELF_DEFENSE"), "Ammo Exchange 5.56 Self Defense", "556-SD", 150, 150, 0, 50
-        );
+        (address market, address token) =
+            factory.createCaliber(bytes32("556_SELF_DEFENSE"), "Ammo Markets 5.56-JHP", "5.56-JHP", 50);
         manager.setMarketDailyMintCap(market, INITIAL_DAILY_MINT_CAP);
         deployed556SelfDefense = CaliberDeployment(market, token);
     }
 
     function _deploy556NatoPractice() internal {
-        (address market, address token) = factory.createCaliber(
-            bytes32("556_NATO_PRACTICE"), "Ammo Exchange 5.56 NATO Practice", "556-P", 150, 150, 0, 50
-        );
+        (address market, address token) =
+            factory.createCaliber(bytes32("556_NATO_PRACTICE"), "Ammo Markets 5.56-FMJ", "5.56-FMJ", 50);
         manager.setMarketDailyMintCap(market, INITIAL_DAILY_MINT_CAP);
         deployed556NatoPractice = CaliberDeployment(market, token);
     }
@@ -162,7 +153,6 @@ contract DeployMainnet is Script {
         console.log("ProtocolToken:", address(protocolToken));
         console.log("ProtocolEmissionController:", address(emissionController));
         console.log("PriceOracle:", address(oracle));
-        console.log("ExitLiquidityPool:", address(exitLiquidityPool));
         console.log("AmmoFactory:", address(factory));
         console.log("PairFactory:", PAIR_FACTORY);
         console.log("Router:", DEX_ROUTER);

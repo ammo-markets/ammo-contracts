@@ -3,11 +3,13 @@ pragma solidity ^0.8.24;
 
 import {IERC20} from "./interfaces/IERC20.sol";
 import {IDexRouter} from "./interfaces/IDexRouter.sol";
+import {IWETH} from "./interfaces/IWETH.sol";
 
-/// @notice Tax-exempt helper for adding AmmoToken liquidity through the configured DEX router.
-/// @dev Mark this contract tax-exempt in AmmoManager before use. Direct router LP adds remain taxable.
+/// @notice Tax-exempt helper for adding and removing CaliberToken liquidity through the configured DEX router.
+/// @dev Mark this contract tax-exempt in AmmoManager before use. Direct router LP adds/removes remain taxable.
 contract AmmoLiquidityManager {
     IDexRouter public immutable router;
+    address public immutable wavax;
 
     error ZeroAddress();
     error InvalidAmount();
@@ -16,8 +18,11 @@ contract AmmoLiquidityManager {
     constructor(address router_) {
         if (router_ == address(0)) revert ZeroAddress();
         router = IDexRouter(router_);
+        wavax = IDexRouter(router_).WETH();
+        if (wavax == address(0)) revert ZeroAddress();
     }
 
+    /// @dev Required so IWETH.withdraw can refund native AVAX into this contract during removeLiquidityETH.
     receive() external payable {}
 
     function addLiquidityETH(
@@ -75,6 +80,60 @@ contract AmmoLiquidityManager {
         _forceApprove(erc20B, address(router), 0);
         _refundToken(erc20A, msg.sender, amountADesired - amountA);
         _refundToken(erc20B, msg.sender, amountBDesired - amountB);
+    }
+
+    /// @notice Remove CaliberToken/WAVAX liquidity and return CaliberToken + native AVAX to the user.
+    /// @dev    Uses router.removeLiquidity (not removeLiquidityETH) so the pair burns underlying
+    ///         directly to this helper (exempt), avoiding the pair→router taxed transfer that the
+    ///         router's own ETH wrapper performs. The helper then unwraps WAVAX itself and forwards.
+    /// @param token             CaliberToken address.
+    /// @param stable            Whether the AMMO/WAVAX pair is the stable variant (almost always false).
+    /// @param liquidity         LP token amount to burn. User must have approved this helper for `liquidity`.
+    /// @param amountTokenMin    Minimum CaliberToken to receive (slippage bound from frontend quote).
+    /// @param amountETHMin      Minimum native AVAX to receive (slippage bound from frontend quote).
+    /// @param to                Recipient of the unwound CaliberToken and native AVAX.
+    /// @param deadline          Unix timestamp after which the call reverts.
+    function removeLiquidityETH(
+        address token,
+        bool stable,
+        uint256 liquidity,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline
+    ) external returns (uint256 amountToken, uint256 amountETH) {
+        if (token == address(0) || to == address(0)) revert ZeroAddress();
+        if (liquidity == 0) revert InvalidAmount();
+
+        // The LP token IS the pair contract in Solidly-style AMMs.
+        address pair = router.pairFor(token, wavax, stable);
+        if (pair == address(0)) revert ZeroAddress();
+
+        IERC20 lp = IERC20(pair);
+
+        // Pull LP tokens from caller into this exempt helper.
+        _safeTransferFrom(lp, msg.sender, address(this), liquidity);
+        _forceApprove(lp, address(router), liquidity);
+
+        // Burn LP via the router. `to = address(this)` makes the pair send AMMO +
+        // WAVAX directly to this exempt helper — the pair→helper transfer for AMMO
+        // is the leg the router's own removeLiquidityETH would have routed
+        // through itself, triggering the buy tax. By taking that hop in-house we
+        // keep an exempt party on the receiving side.
+        (amountToken, amountETH) = router.removeLiquidity(
+            token, wavax, stable, liquidity, amountTokenMin, amountETHMin, address(this), deadline
+        );
+
+        _forceApprove(lp, address(router), 0);
+
+        // Unwrap WAVAX → native AVAX. IWETH.withdraw sends native to msg.sender,
+        // which is this contract — caught by the receive() fallback.
+        IWETH(wavax).withdraw(amountETH);
+
+        // Forward both legs to `to`. helper→to for AMMO is untaxed (helper
+        // exempt; `to` is not a pool); native AVAX is forwarded via low-level call.
+        _safeTransfer(IERC20(token), to, amountToken);
+        _refundETH(to, amountETH);
     }
 
     function _refundToken(IERC20 token, address to, uint256 amount) internal {

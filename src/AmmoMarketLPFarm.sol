@@ -313,7 +313,9 @@ contract AmmoMarketLPFarm {
             return;
         }
 
-        uint256 poolReward = _capFarmAccrual(_emitted(pool.lastRewardTime, current) / rewardableCount);
+        uint256 poolReward = _emitted(pool.lastRewardTime, current) / rewardableCount;
+        uint256 pendingRawRewards = _pendingRawRewards(current, rewardableCount);
+        poolReward = _capFarmAccrual(poolReward, pendingRawRewards);
         pool.accRewardPerShare += (poolReward * ACC_REWARD_PRECISION) / pool.totalStaked;
         pool.lastRewardTime = current;
     }
@@ -329,7 +331,9 @@ contract AmmoMarketLPFarm {
         if (current > pool.lastRewardTime && pool.active && pool.totalStaked > 0) {
             uint256 rewardableCount = rewardablePoolCount();
             if (rewardableCount > 0) {
-                uint256 poolReward = _viewCappedFarmAccrual(_emitted(pool.lastRewardTime, current) / rewardableCount);
+                uint256 poolReward = _emitted(pool.lastRewardTime, current) / rewardableCount;
+                uint256 pendingRawRewards = _pendingRawRewards(current, rewardableCount);
+                poolReward = _viewCappedFarmAccrual(poolReward, pendingRawRewards);
                 accRewardPerShare += (poolReward * ACC_REWARD_PRECISION) / pool.totalStaked;
             }
         }
@@ -367,13 +371,25 @@ contract AmmoMarketLPFarm {
         }
     }
 
-    function _capFarmAccrual(uint256 amount) internal returns (uint256) {
+    function _pendingRawRewards(uint256 current, uint256 rewardableCount) internal view returns (uint256 total) {
+        uint256 length = pools.length;
+        for (uint256 pid; pid < length; pid++) {
+            PoolInfo memory pool = pools[pid];
+            if (pool.active && pool.totalStaked > 0 && current > pool.lastRewardTime) {
+                total += _emitted(pool.lastRewardTime, current) / rewardableCount;
+            }
+        }
+    }
+
+    function _capFarmAccrual(uint256 amount, uint256 pendingRawRewards) internal returns (uint256) {
         if (amount == 0) return 0;
         uint256 accrued = totalFarmAccrued;
         if (accrued >= farmMintCap) return 0;
 
         uint256 remaining = farmMintCap - accrued;
-        if (amount > remaining) {
+        if (pendingRawRewards > remaining) {
+            amount = (amount * remaining) / pendingRawRewards;
+        } else if (amount > remaining) {
             amount = remaining;
         }
 
@@ -381,9 +397,12 @@ contract AmmoMarketLPFarm {
         return amount;
     }
 
-    function _viewCappedFarmAccrual(uint256 amount) internal view returns (uint256) {
+    function _viewCappedFarmAccrual(uint256 amount, uint256 pendingRawRewards) internal view returns (uint256) {
         if (amount == 0 || totalFarmAccrued >= farmMintCap) return 0;
         uint256 remaining = farmMintCap - totalFarmAccrued;
+        if (pendingRawRewards > remaining) {
+            return (amount * remaining) / pendingRawRewards;
+        }
         return amount > remaining ? remaining : amount;
     }
 
