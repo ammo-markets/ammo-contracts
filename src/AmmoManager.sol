@@ -20,7 +20,9 @@ contract AmmoManager {
 
     // ── Constants ───────────────────────────────────
 
+    uint256 public constant BPS_DIVISOR = 10_000;
     uint256 public constant MAX_TAX_BPS = 1_000; // 10% max
+    uint256 public constant MAX_MINT_CAP_INCREASE_BPS = 1_000; // 10% max single-step cap increase
 
     // ── Core protocol state ─────────────────────────
 
@@ -64,6 +66,7 @@ contract AmmoManager {
     error NotPendingOwner();
     error ZeroAddress();
     error TaxTooHigh();
+    error MarketDailyMintCapIncreaseTooLarge();
 
     // ── Events (core) ───────────────────────────────
 
@@ -144,11 +147,18 @@ contract AmmoManager {
         emit TreasuryUpdated(old, newTreasury);
     }
 
+    /// @notice Set per-market daily mint cap (payment-token decimals).
+    /// @dev Decreases are unrestricted. When a cap is already set, each increase is limited to
+    ///      `MAX_MINT_CAP_INCREASE_BPS` (10%) of the current cap. Initial setup from zero is unrestricted.
     function setMarketDailyMintCap(address market, uint256 capUsdc) external onlyOwner {
         if (market == address(0)) revert ZeroAddress();
-        uint256 old = marketDailyMintCapUsdc[market];
+        uint256 oldCap = marketDailyMintCapUsdc[market];
+        if (oldCap != 0 && capUsdc > oldCap) {
+            uint256 maxCap = oldCap + (oldCap * MAX_MINT_CAP_INCREASE_BPS) / BPS_DIVISOR;
+            if (capUsdc > maxCap) revert MarketDailyMintCapIncreaseTooLarge();
+        }
         marketDailyMintCapUsdc[market] = capUsdc;
-        emit MarketDailyMintCapUpdated(market, old, capUsdc);
+        emit MarketDailyMintCapUpdated(market, oldCap, capUsdc);
     }
 
     // ══════════════════════════════════════════════════
@@ -170,7 +180,7 @@ contract AmmoManager {
     }
 
     function setGvAmmo(address gvAmmo_, uint256 thresholdBps) external onlyOwner {
-        if (thresholdBps > 10_000) revert TaxTooHigh();
+        if (thresholdBps > BPS_DIVISOR) revert TaxTooHigh();
         gvAmmo = gvAmmo_;
         gvAmmoTaxExemptionBps = thresholdBps;
         emit gvAmmoUpdated(gvAmmo_, thresholdBps);
@@ -191,7 +201,7 @@ contract AmmoManager {
             if (gvBalance == 0) return false;
             try IGvAmmo(gvAmmo_).totalSupply() returns (uint256 gvSupply) {
                 if (gvSupply == 0) return false;
-                return (gvBalance * 10_000) >= (gvSupply * thresholdBps);
+                return (gvBalance * BPS_DIVISOR) >= (gvSupply * thresholdBps);
             } catch {
                 return false;
             }

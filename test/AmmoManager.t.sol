@@ -148,6 +148,35 @@ contract AmmoManagerTest is Test {
         manager.setMarketDailyMintCap(alice, 25_000e6);
     }
 
+    function testSetMarketDailyMintCapAllowsTenPercentIncrease() public {
+        manager.setMarketDailyMintCap(alice, 10_000e6);
+
+        manager.setMarketDailyMintCap(alice, 11_000e6);
+
+        assertEq(manager.marketDailyMintCapUsdc(alice), 11_000e6);
+    }
+
+    function testSetMarketDailyMintCapRevertsWhenIncreaseExceedsTenPercent() public {
+        manager.setMarketDailyMintCap(alice, 10_000e6);
+
+        vm.expectRevert(AmmoManager.MarketDailyMintCapIncreaseTooLarge.selector);
+        manager.setMarketDailyMintCap(alice, 11_000e6 + 1);
+    }
+
+    function testSetMarketDailyMintCapAllowsUnrestrictedDecrease() public {
+        manager.setMarketDailyMintCap(alice, 10_000e6);
+
+        manager.setMarketDailyMintCap(alice, 1e6);
+
+        assertEq(manager.marketDailyMintCapUsdc(alice), 1e6);
+    }
+
+    function testSetMarketDailyMintCapInitialSetUnrestricted() public {
+        manager.setMarketDailyMintCap(alice, 1_000_000e6);
+
+        assertEq(manager.marketDailyMintCapUsdc(alice), 1_000_000e6);
+    }
+
     // ── Denylist admin ──────────────────────────────
 
     function testSetDeniedAddsAndRemoves() public {
