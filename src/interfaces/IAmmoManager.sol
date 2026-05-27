@@ -3,28 +3,16 @@ pragma solidity ^0.8.24;
 
 /// @title IAmmoManager
 /// @notice Interface for the global ops/admin, role registry, and centralized tax configuration.
-/// @dev All CaliberMarket and CaliberToken instances reference this contract.
 interface IAmmoManager {
-    // ── Structs ─────────────────────────────────────
-
     struct TaxConfig {
         uint256 buyTax;
         uint256 sellTax;
     }
 
-    struct SwapPath {
-        address outputToken;
-        bool stable;
-    }
-
-    // ── Errors ───────���──────────────────────────────
-
     error NotOwner();
     error NotPendingOwner();
     error ZeroAddress();
     error TaxTooHigh();
-
-    // ── Events (core) ───────────────────────────────
 
     event OwnershipTransferStarted(address indexed currentOwner, address indexed newOwner);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
@@ -33,17 +21,8 @@ interface IAmmoManager {
     event KeeperUpdated(address indexed keeper, bool allowed);
     event TreasuryUpdated(address indexed oldTreasury, address indexed newTreasury);
     event MarketDailyMintCapUpdated(address indexed market, uint256 oldCap, uint256 newCap);
-
-    // ── Events (tax) ────────────────────────────────
-
-    event DexRouterUpdated(address indexed oldRouter, address indexed newRouter);
     event PoolTaxSet(address indexed token, address indexed pool, uint256 buyTax, uint256 sellTax);
-    event SwapPathUpdated(address indexed token, address indexed outputToken, bool stable);
-    event TaxSwapThresholdUpdated(address indexed token, uint256 threshold);
-    event TaxSwapSlippageUpdated(uint256 oldBps, uint256 newBps);
     event TaxExemptUpdated(address indexed account, bool exempt);
-
-    // ── View functions (core) ───────────────────────
 
     function owner() external view returns (address);
     function pendingOwner() external view returns (address);
@@ -54,51 +33,18 @@ interface IAmmoManager {
     function marketDailyMintCapUsdc(address market) external view returns (uint256);
     function isKeeper(address account) external view returns (bool);
     function isOwner(address account) external view returns (bool);
-
-    // ── View functions (tax) ────────────────────────
-
     function wavax() external view returns (address);
-    function dexRouter() external view returns (address);
     function tokenPoolTax(address token, address pool) external view returns (uint256 buyTax, uint256 sellTax);
-    function swapPaths(address token) external view returns (address outputToken, bool stable);
-    function taxSwapThresholds(address token) external view returns (uint256);
-    function taxSwapSlippageBps() external view returns (uint256);
     function taxExempt(address account) external view returns (bool);
-    function getSwapConfig(address token)
-        external
-        view
-        returns (
-            address router,
-            address wavax_,
-            SwapPath memory path,
-            uint256 threshold,
-            uint256 slippageBps,
-            address treasury_
-        );
-
-    // ── Ownership (2-step) ──────────────────────────
 
     function transferOwnership(address newOwner) external;
     function acceptOwnership() external;
-
-    // ── Role management ─────────��───────────────────
-
     function setGuardian(address guardian_) external;
     function setKeeper(address keeper, bool allowed) external;
-
-    // ── Global config ──────────��────────────────────
-
     function setFeeRecipient(address newRecipient) external;
     function setTreasury(address newTreasury) external;
     function setMarketDailyMintCap(address market, uint256 capUsdc) external;
-
-    // ── Tax admin ───────────���───────────────────────
-
-    function setDexRouter(address newRouter) external;
     function setPoolTax(address token, address pool, uint256 buyBps, uint256 sellBps) external;
     function removePoolTax(address token, address pool) external;
-    function setSwapPath(address token, address outputToken, bool stable) external;
-    function setTaxSwapThreshold(address token, uint256 threshold) external;
-    function setTaxSwapSlippageBps(uint256 newBps) external;
     function setTaxExempt(address account, bool exempt) external;
 }

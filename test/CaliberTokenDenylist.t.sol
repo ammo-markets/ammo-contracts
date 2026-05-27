@@ -45,7 +45,6 @@ contract CaliberTokenDenylistTest is Test {
 
         manager = new AmmoManager(feeRecipient, wavax);
         manager.setTreasury(treasury);
-        manager.setDexRouter(address(router));
 
         market = new CaliberMarket(
             CaliberMarket.MarketConfig({
@@ -64,10 +63,6 @@ contract CaliberTokenDenylistTest is Test {
         manager.setMarketDailyMintCap(address(market), type(uint256).max);
 
         manager.setPoolTax(address(token), pool, BUY_TAX, SELL_TAX);
-        manager.setSwapPath(address(token), wavax, false);
-        manager.setTaxSwapThreshold(address(token), 1e18);
-
-        vm.deal(address(router), 100 ether);
 
         _mintTokensToUser(user, 1000e6);
         _mintTokensToUser(user2, 1000e6);
@@ -217,21 +212,17 @@ contract CaliberTokenDenylistTest is Test {
     // ── Auto-swap path interaction ────────────────
     // ═══════════════════════════════════════════════
 
-    function testTaxSwapPathStillWorksWhenUnrelatedAddressDenied() public {
+    function testTaxFlushStillWorksWhenUnrelatedAddressDenied() public {
         // Deny an unrelated address. The protocol's internal tax flush
         // (token→pool for swap, treasury for AVAX) should be unaffected.
         manager.setDenied(bridge, true);
 
-        // Accumulate taxes via a sell.
+        uint256 treasuryBefore = token.balanceOf(treasury);
+
         vm.prank(user);
         token.transfer(pool, 100e18);
-        assertTrue(token.balanceOf(address(token)) >= 1e18);
 
-        // Regular transfer triggers auto-swap; should not revert.
-        uint256 treasuryBefore = treasury.balance;
-        vm.prank(user);
-        token.transfer(user2, 1e18);
-        assertTrue(treasury.balance > treasuryBefore, "Treasury received AVAX");
+        assertEq(token.balanceOf(treasury) - treasuryBefore, (100e18 * SELL_TAX) / 10_000);
     }
 
     // ═══════════════════════════════════════════════

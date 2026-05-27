@@ -17,6 +17,7 @@ rsync -av --delete \
   --exclude='out/' \
   --exclude='cache/' \
   --exclude='broadcast/' \
+  --exclude='lib/' \
   --exclude='.env' \
   --exclude='.env.*' \
   --exclude='package.json' \

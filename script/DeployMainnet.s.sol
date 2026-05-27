@@ -63,7 +63,6 @@ contract DeployMainnet is Script {
         manager = new AmmoManager(feeRecipient, wrappedNative);
         manager.setTreasury(treasury);
         manager.setGuardian(guardian);
-        manager.setDexRouter(DEX_ROUTER);
 
         // 2. Deploy tax-exempt liquidity helper
         liquidityManager = new AmmoLiquidityManager(DEX_ROUTER);

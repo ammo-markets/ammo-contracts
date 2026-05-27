@@ -18,15 +18,9 @@ contract AmmoManager {
         uint256 sellTax; // bps (100 = 1%)
     }
 
-    struct SwapPath {
-        address outputToken;
-        bool stable;
-    }
-
     // ── Constants ───────────────────────────────────
 
     uint256 public constant MAX_TAX_BPS = 1_000; // 10% max
-    uint256 public constant MAX_TAX_SWAP_SLIPPAGE_BPS = 5_000; // 50% max
 
     // ── Core protocol state ─────────────────────────
 
@@ -47,22 +41,8 @@ contract AmmoManager {
     /// @notice Wrapped native token address (immutable per chain).
     address public immutable wavax;
 
-    /// @notice Solidly-style DEX router address (protocol-wide, mutable).
-    address public dexRouter;
-
     /// @notice Per-token per-pool tax rates. token => pool => TaxConfig
     mapping(address => mapping(address => TaxConfig)) public tokenPoolTax;
-
-    /// @notice Per-token swap path configuration for auto-selling taxes.
-    mapping(address => SwapPath) public swapPaths;
-
-    /// @notice Per-token minimum accumulated tax balance before auto-swap triggers.
-    mapping(address => uint256) public taxSwapThresholds;
-
-    /// @notice Slippage tolerance for automatic tax swaps in basis points.
-    /// @dev Compared against the pair's 30-minute TWAP, so the tolerance must
-    ///      cover normal TWAP-vs-spot drift (bigger than spot-vs-spot drift).
-    uint256 public taxSwapSlippageBps = 1_000;
 
     /// @notice Protocol-wide tax-exempt addresses (staking, vesting, etc.).
     mapping(address => bool) public taxExempt;
@@ -97,11 +77,7 @@ contract AmmoManager {
 
     // ── Events (tax) ────────────────────────────────
 
-    event DexRouterUpdated(address indexed oldRouter, address indexed newRouter);
     event PoolTaxSet(address indexed token, address indexed pool, uint256 buyTax, uint256 sellTax);
-    event SwapPathUpdated(address indexed token, address indexed outputToken, bool stable);
-    event TaxSwapThresholdUpdated(address indexed token, uint256 threshold);
-    event TaxSwapSlippageUpdated(uint256 oldBps, uint256 newBps);
     event TaxExemptUpdated(address indexed account, bool exempt);
     event gvAmmoUpdated(address indexed gvAmmo, uint256 thresholdBps);
     event DeniedUpdated(address indexed account, bool denied);
@@ -128,8 +104,6 @@ contract AmmoManager {
     // ── Core Protocol Admin ──────────────────────────
     // ══════════════════════════════════════════════════
 
-    // ── Ownership (2-step) ──────────────────────────
-
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert ZeroAddress();
         pendingOwner = newOwner;
@@ -144,8 +118,6 @@ contract AmmoManager {
         emit OwnershipTransferred(oldOwner, msg.sender);
     }
 
-    // ── Role management ─────────────────────────────
-
     function setGuardian(address guardian_) external onlyOwner {
         address old = guardian;
         guardian = guardian_;
@@ -157,8 +129,6 @@ contract AmmoManager {
         keepers[keeper] = allowed;
         emit KeeperUpdated(keeper, allowed);
     }
-
-    // ── Global config ───────────────────────────────
 
     function setFeeRecipient(address newRecipient) external onlyOwner {
         if (newRecipient == address(0)) revert ZeroAddress();
@@ -174,8 +144,6 @@ contract AmmoManager {
         emit TreasuryUpdated(old, newTreasury);
     }
 
-    /// @notice Set the daily gross mint-request cap for a CaliberMarket.
-    /// @dev Cap is in the market's payment token native decimals. A zero cap disables mint requests.
     function setMarketDailyMintCap(address market, uint256 capUsdc) external onlyOwner {
         if (market == address(0)) revert ZeroAddress();
         uint256 old = marketDailyMintCapUsdc[market];
@@ -187,60 +155,20 @@ contract AmmoManager {
     // ── Tax Admin ────────────────────────────────────
     // ══════════════════════════════════════════════════
 
-    /// @notice Set the DEX router address for the entire protocol.
-    function setDexRouter(address newRouter) external onlyOwner {
-        address old = dexRouter;
-        dexRouter = newRouter;
-        emit DexRouterUpdated(old, newRouter);
-    }
-
-    /// @notice Set buy/sell tax rates for a specific token's DEX pool.
-    /// @param token The CaliberToken address.
-    /// @param pool The DEX pair address.
-    /// @param buyBps Buy tax in basis points (max 1000 = 10%).
-    /// @param sellBps Sell tax in basis points (max 1000 = 10%).
     function setPoolTax(address token, address pool, uint256 buyBps, uint256 sellBps) external onlyOwner {
         _setPoolTax(token, pool, buyBps, sellBps);
     }
 
-    /// @notice Remove tax from a specific token's DEX pool.
     function removePoolTax(address token, address pool) external onlyOwner {
         _setPoolTax(token, pool, 0, 0);
     }
 
-    /// @notice Configure the DEX swap path for a token's auto-swap.
-    /// @param token The CaliberToken address.
-    /// @param outputToken The token to receive before the router unwraps to native ETH/AVAX.
-    /// @param stable Whether to route through the stable pair.
-    function setSwapPath(address token, address outputToken, bool stable) external onlyOwner {
-        if (token == address(0) || outputToken == address(0)) revert ZeroAddress();
-        swapPaths[token] = SwapPath({outputToken: outputToken, stable: stable});
-        emit SwapPathUpdated(token, outputToken, stable);
-    }
-
-    /// @notice Set the minimum accumulated tax balance before auto-swap triggers.
-    function setTaxSwapThreshold(address token, uint256 threshold) external onlyOwner {
-        if (token == address(0)) revert ZeroAddress();
-        taxSwapThresholds[token] = threshold;
-        emit TaxSwapThresholdUpdated(token, threshold);
-    }
-
-    /// @notice Set automatic tax-swap slippage tolerance in basis points.
-    function setTaxSwapSlippageBps(uint256 newBps) external onlyOwner {
-        if (newBps > MAX_TAX_SWAP_SLIPPAGE_BPS) revert TaxTooHigh();
-        uint256 old = taxSwapSlippageBps;
-        taxSwapSlippageBps = newBps;
-        emit TaxSwapSlippageUpdated(old, newBps);
-    }
-
-    /// @notice Add or remove a protocol-wide tax exemption.
     function setTaxExempt(address account, bool exempt) external onlyOwner {
         if (account == address(0)) revert ZeroAddress();
         taxExempt[account] = exempt;
         emit TaxExemptUpdated(account, exempt);
     }
 
-    /// @notice Configure gvAMMO-based DEX tax exemption. Set gvAMMO or bps to zero to disable.
     function setGvAmmo(address gvAmmo_, uint256 thresholdBps) external onlyOwner {
         if (thresholdBps > 10_000) revert TaxTooHigh();
         gvAmmo = gvAmmo_;
@@ -248,37 +176,12 @@ contract AmmoManager {
         emit gvAmmoUpdated(gvAmmo_, thresholdBps);
     }
 
-    /// @notice Add or remove a protocol-wide transfer denial. Denied addresses
-    ///         cannot be the `from` or `to` of any CaliberToken transfer. Used to
-    ///         block bridges and other destinations the protocol does not allow
-    ///         ammo tokens to leave through.
     function setDenied(address account, bool denied) external onlyOwner {
         if (account == address(0)) revert ZeroAddress();
         isDenied[account] = denied;
         emit DeniedUpdated(account, denied);
     }
 
-    // ══════════════════════════════════════════════════
-    // ── Tax View Functions (called by CaliberToken) ─────
-    // ══════════════════════════════════════════════════
-
-    /// @notice Get all swap configuration a token needs to execute _sellTaxes().
-    function getSwapConfig(address token)
-        external
-        view
-        returns (
-            address router,
-            address wavax_,
-            SwapPath memory path,
-            uint256 threshold,
-            uint256 slippageBps,
-            address treasury_
-        )
-    {
-        return (dexRouter, wavax, swapPaths[token], taxSwapThresholds[token], taxSwapSlippageBps, treasury);
-    }
-
-    /// @notice Whether an account owns enough gvAMMO voting power share to avoid DEX tax.
     function isGvAmmoTaxExempt(address account) external view returns (bool) {
         address gvAmmo_ = gvAmmo;
         uint256 thresholdBps = gvAmmoTaxExemptionBps;
@@ -296,10 +199,6 @@ contract AmmoManager {
             return false;
         }
     }
-
-    // ══════════════════════════════════════════════════
-    // ── View Helpers (called by CaliberMarket) ───────
-    // ══════════════════════════════════════════════════
 
     function _checkOwner() internal view {
         if (msg.sender != owner) revert NotOwner();

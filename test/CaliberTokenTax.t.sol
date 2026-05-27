@@ -68,7 +68,6 @@ contract CaliberTokenTaxTest is Test {
 
         manager = new AmmoManager(feeRecipient, wavax);
         manager.setTreasury(treasury);
-        manager.setDexRouter(address(router));
         manager.setTaxExempt(address(liquidityManager), true);
 
         market = new CaliberMarket(
@@ -87,15 +86,7 @@ contract CaliberTokenTaxTest is Test {
         token = market.token();
         manager.setMarketDailyMintCap(address(market), type(uint256).max);
 
-        // Configure tax: 3% buy, 3% sell on the pool
         manager.setPoolTax(address(token), pool, BUY_TAX, SELL_TAX);
-        // Configure swap path
-        manager.setSwapPath(address(token), wavax, false);
-        // Set threshold low for testing
-        manager.setTaxSwapThreshold(address(token), 1e18);
-
-        // Fund router with AVAX for mock swaps
-        vm.deal(address(router), 100 ether);
 
         // Mint tokens to users via market
         _mintTokensToUser(user, 1000e6);
@@ -116,13 +107,13 @@ contract CaliberTokenTaxTest is Test {
         uint256 expectedReceive = amount - expectedTax; // 97e18
 
         uint256 userBefore = token.balanceOf(user);
+        uint256 treasuryBefore = token.balanceOf(treasury);
 
         vm.prank(pool);
         token.transfer(user, amount);
 
         assertEq(token.balanceOf(user) - userBefore, expectedReceive);
-        // Tax goes to token contract
-        assertTrue(token.balanceOf(address(token)) >= expectedTax);
+        assertEq(token.balanceOf(treasury) - treasuryBefore, expectedTax);
     }
 
     function testBuyTaxEmitsCorrectTransferAmounts() public {
@@ -134,7 +125,7 @@ contract CaliberTokenTaxTest is Test {
         emit CaliberToken.Transfer(pool, user, expectedReceive);
 
         vm.expectEmit(true, true, false, true);
-        emit CaliberToken.Transfer(pool, address(token), expectedTax);
+        emit CaliberToken.Transfer(pool, treasury, expectedTax);
 
         vm.prank(pool);
         token.transfer(user, amount);
@@ -149,12 +140,67 @@ contract CaliberTokenTaxTest is Test {
         uint256 expectedTax = (amount * SELL_TAX) / 10_000;
 
         uint256 poolBefore = token.balanceOf(pool);
+        uint256 treasuryBefore = token.balanceOf(treasury);
 
         vm.prank(user);
         token.transfer(pool, amount);
 
         assertEq(token.balanceOf(pool) - poolBefore, amount - expectedTax);
-        assertTrue(token.balanceOf(address(token)) > 0);
+        assertEq(token.balanceOf(treasury) - treasuryBefore, expectedTax);
+    }
+
+    function testTaxStaysInTokenContractWhenTreasuryUnset() public {
+        AmmoManager unsetTreasuryManager = new AmmoManager(feeRecipient, wavax);
+        CaliberToken unsetTreasuryToken =
+            new CaliberToken("Unset Treasury Ammo", "UTA", address(this), address(unsetTreasuryManager));
+        unsetTreasuryManager.setPoolTax(address(unsetTreasuryToken), pool, BUY_TAX, SELL_TAX);
+
+        unsetTreasuryToken.mint(user, 100e18);
+
+        uint256 amount = 100e18;
+        uint256 expectedTax = (amount * SELL_TAX) / 10_000;
+
+        vm.expectEmit(true, true, false, true);
+        emit CaliberToken.Transfer(user, address(unsetTreasuryToken), expectedTax);
+
+        vm.prank(user);
+        unsetTreasuryToken.transfer(pool, amount);
+
+        assertEq(unsetTreasuryToken.balanceOf(pool), amount - expectedTax);
+        assertEq(unsetTreasuryToken.balanceOf(address(unsetTreasuryToken)), expectedTax);
+        assertEq(unsetTreasuryToken.balanceOf(address(0)), 0);
+    }
+
+    function testHeldTaxSweepsToTreasuryOnNextTaxedTransfer() public {
+        AmmoManager unsetTreasuryManager = new AmmoManager(feeRecipient, wavax);
+        CaliberToken unsetTreasuryToken =
+            new CaliberToken("Unset Treasury Ammo", "UTA", address(this), address(unsetTreasuryManager));
+        unsetTreasuryManager.setPoolTax(address(unsetTreasuryToken), pool, BUY_TAX, SELL_TAX);
+
+        unsetTreasuryToken.mint(user, 200e18);
+
+        uint256 amount = 100e18;
+        uint256 expectedTax = (amount * SELL_TAX) / 10_000;
+
+        vm.prank(user);
+        unsetTreasuryToken.transfer(pool, amount);
+
+        assertEq(unsetTreasuryToken.balanceOf(address(unsetTreasuryToken)), expectedTax);
+        assertEq(unsetTreasuryToken.balanceOf(treasury), 0);
+
+        unsetTreasuryManager.setTreasury(treasury);
+
+        vm.expectEmit(true, true, false, true);
+        emit CaliberToken.Transfer(address(unsetTreasuryToken), treasury, expectedTax);
+
+        vm.expectEmit(true, true, false, true);
+        emit CaliberToken.Transfer(user, treasury, expectedTax);
+
+        vm.prank(user);
+        unsetTreasuryToken.transfer(pool, amount);
+
+        assertEq(unsetTreasuryToken.balanceOf(address(unsetTreasuryToken)), 0);
+        assertEq(unsetTreasuryToken.balanceOf(treasury), expectedTax * 2);
     }
 
     // ═══════════════════════════════════════════════
@@ -186,13 +232,12 @@ contract CaliberTokenTaxTest is Test {
         vm.prank(user);
         token.approve(address(market), redeemAmount);
 
-        uint256 tokenContractBefore = token.balanceOf(address(token));
+        uint256 treasuryBefore = token.balanceOf(treasury);
 
         vm.prank(user);
         market.startRedeem(redeemAmount, 0);
 
-        // Market pulls tokens — no tax should be collected
-        assertEq(token.balanceOf(address(token)), tokenContractBefore);
+        assertEq(token.balanceOf(treasury), treasuryBefore);
         assertEq(token.balanceOf(address(market)), redeemAmount);
     }
 
@@ -228,11 +273,11 @@ contract CaliberTokenTaxTest is Test {
 
         // Sell: exempt address → pool — should bypass sell tax
         uint256 poolBefore = token.balanceOf(pool);
-        uint256 taxBefore = token.balanceOf(address(token));
+        uint256 taxBefore = token.balanceOf(treasury);
         vm.prank(stakingContract);
         token.transfer(pool, 50e18);
         assertEq(token.balanceOf(pool) - poolBefore, 50e18, "Pool gets full amount");
-        assertEq(token.balanceOf(address(token)), taxBefore, "No tax collected");
+        assertEq(token.balanceOf(treasury), taxBefore, "No tax collected");
     }
 
     function testGvAmmoTaxExemptionDisabledByDefaultDoesNotChangeSellTax() public {
@@ -241,13 +286,13 @@ contract CaliberTokenTaxTest is Test {
         gvAmmo.setTotalSupply(10_000e18);
 
         uint256 poolBefore = token.balanceOf(pool);
-        uint256 taxBefore = token.balanceOf(address(token));
+        uint256 taxBefore = token.balanceOf(treasury);
 
         vm.prank(user);
         token.transfer(pool, amount);
 
         assertEq(token.balanceOf(pool) - poolBefore, amount - ((amount * SELL_TAX) / 10_000));
-        assertEq(token.balanceOf(address(token)) - taxBefore, (amount * SELL_TAX) / 10_000);
+        assertEq(token.balanceOf(treasury) - taxBefore, (amount * SELL_TAX) / 10_000);
     }
 
     function testGvAmmoTaxExemptSellerPaysNoSellTax() public {
@@ -257,13 +302,13 @@ contract CaliberTokenTaxTest is Test {
         gvAmmo.setBalance(user, 10e18);
 
         uint256 poolBefore = token.balanceOf(pool);
-        uint256 taxBefore = token.balanceOf(address(token));
+        uint256 taxBefore = token.balanceOf(treasury);
 
         vm.prank(user);
         token.transfer(pool, amount);
 
         assertEq(token.balanceOf(pool) - poolBefore, amount);
-        assertEq(token.balanceOf(address(token)), taxBefore);
+        assertEq(token.balanceOf(treasury), taxBefore);
     }
 
     function testGvAmmoTaxExemptionIsIndependentOfSwapSize() public {
@@ -273,13 +318,13 @@ contract CaliberTokenTaxTest is Test {
         gvAmmo.setBalance(user, 10e18);
 
         uint256 poolBefore = token.balanceOf(pool);
-        uint256 taxBefore = token.balanceOf(address(token));
+        uint256 taxBefore = token.balanceOf(treasury);
 
         vm.prank(user);
         token.transfer(pool, amount);
 
         assertEq(token.balanceOf(pool) - poolBefore, amount);
-        assertEq(token.balanceOf(address(token)), taxBefore);
+        assertEq(token.balanceOf(treasury), taxBefore);
     }
 
     function testGvAmmoTaxExemptBuyerPaysNoBuyTax() public {
@@ -289,13 +334,13 @@ contract CaliberTokenTaxTest is Test {
         gvAmmo.setBalance(user, 10e18);
 
         uint256 userBefore = token.balanceOf(user);
-        uint256 taxBefore = token.balanceOf(address(token));
+        uint256 taxBefore = token.balanceOf(treasury);
 
         vm.prank(pool);
         token.transfer(user, amount);
 
         assertEq(token.balanceOf(user) - userBefore, amount);
-        assertEq(token.balanceOf(address(token)), taxBefore);
+        assertEq(token.balanceOf(treasury), taxBefore);
     }
 
     function testGvAmmoTaxExemptionRequiresEnoughSupplyShare() public {
@@ -305,13 +350,13 @@ contract CaliberTokenTaxTest is Test {
         gvAmmo.setBalance(user, 10e18 - 1);
 
         uint256 poolBefore = token.balanceOf(pool);
-        uint256 taxBefore = token.balanceOf(address(token));
+        uint256 taxBefore = token.balanceOf(treasury);
 
         vm.prank(user);
         token.transfer(pool, amount);
 
         assertEq(token.balanceOf(pool) - poolBefore, amount - ((amount * SELL_TAX) / 10_000));
-        assertEq(token.balanceOf(address(token)) - taxBefore, (amount * SELL_TAX) / 10_000);
+        assertEq(token.balanceOf(treasury) - taxBefore, (amount * SELL_TAX) / 10_000);
     }
 
     function testGvAmmoTaxExemptionOnlyChecksTraderNotPool() public {
@@ -321,13 +366,13 @@ contract CaliberTokenTaxTest is Test {
         gvAmmo.setBalance(pool, type(uint256).max);
 
         uint256 poolBefore = token.balanceOf(pool);
-        uint256 taxBefore = token.balanceOf(address(token));
+        uint256 taxBefore = token.balanceOf(treasury);
 
         vm.prank(user);
         token.transfer(pool, amount);
 
         assertEq(token.balanceOf(pool) - poolBefore, amount - ((amount * SELL_TAX) / 10_000));
-        assertEq(token.balanceOf(address(token)) - taxBefore, (amount * SELL_TAX) / 10_000);
+        assertEq(token.balanceOf(treasury) - taxBefore, (amount * SELL_TAX) / 10_000);
     }
 
     function testGvAmmoTaxExemptionFailsClosedIfBalanceCallReverts() public {
@@ -338,32 +383,32 @@ contract CaliberTokenTaxTest is Test {
         gvAmmo.setShouldRevert(true);
 
         uint256 poolBefore = token.balanceOf(pool);
-        uint256 taxBefore = token.balanceOf(address(token));
+        uint256 taxBefore = token.balanceOf(treasury);
 
         vm.prank(user);
         token.transfer(pool, amount);
 
         assertEq(token.balanceOf(pool) - poolBefore, amount - ((amount * SELL_TAX) / 10_000));
-        assertEq(token.balanceOf(address(token)) - taxBefore, (amount * SELL_TAX) / 10_000);
+        assertEq(token.balanceOf(treasury) - taxBefore, (amount * SELL_TAX) / 10_000);
     }
 
     function testDirectAddLiquidityTokenTransferIsTaxed() public {
         uint256 amount = 100e18;
         uint256 expectedTax = (amount * SELL_TAX) / 10_000;
 
-        uint256 taxBefore = token.balanceOf(address(token));
+        uint256 taxBefore = token.balanceOf(treasury);
         uint256 poolBefore = token.balanceOf(pool);
 
         vm.prank(user);
         token.transfer(pool, amount);
 
         assertEq(token.balanceOf(pool) - poolBefore, amount - expectedTax);
-        assertEq(token.balanceOf(address(token)) - taxBefore, expectedTax);
+        assertEq(token.balanceOf(treasury) - taxBefore, expectedTax);
     }
 
     function testLiquidityHelperAddLiquidityIsNotTaxed() public {
         uint256 amount = 100e18;
-        uint256 taxBefore = token.balanceOf(address(token));
+        uint256 taxBefore = token.balanceOf(treasury);
         uint256 poolBefore = token.balanceOf(pool);
 
         vm.deal(user, 1 ether);
@@ -373,170 +418,7 @@ contract CaliberTokenTaxTest is Test {
         vm.stopPrank();
 
         assertEq(token.balanceOf(pool) - poolBefore, amount);
-        assertEq(token.balanceOf(address(token)), taxBefore);
-    }
-
-    // ═══════════════════════════════════════════════
-    // ── Auto-Swap ─────────────────────────────────
-    // ═══════════════════════════════════════════════
-
-    function testAutoSwapTriggersOnRegularTransfer() public {
-        // Sell to accumulate taxes above threshold
-        vm.prank(user);
-        token.transfer(pool, 100e18); // 3e18 tax accumulated
-
-        uint256 taxBalance = token.balanceOf(address(token));
-        assertTrue(taxBalance >= 1e18, "Tax should exceed threshold");
-
-        // DEX sell should NOT have triggered auto-swap
-        assertEq(router.callCount(), 0, "No swap during DEX sell");
-
-        // Regular transfer triggers auto-swap
-        uint256 treasuryAvaxBefore = treasury.balance;
-
-        vm.prank(user);
-        token.transfer(user2, 1e18);
-
-        assertTrue(router.callCount() > 0, "Swap triggered on regular transfer");
-        assertTrue(treasury.balance > treasuryAvaxBefore, "Treasury received AVAX");
-        assertEq(router.lastAmountOutMin(), (taxBalance / 1000 * 9_000) / 10_000, "Uses configured slippage");
-    }
-
-    function testAutoSwapDoesNotFireDuringSell() public {
-        // Sell to accumulate taxes above threshold
-        vm.prank(user);
-        token.transfer(pool, 100e18); // 3e18 tax > 1e18 threshold
-
-        assertEq(router.callCount(), 0, "No swap during sell");
-        assertTrue(token.balanceOf(address(token)) >= 1e18, "Taxes accumulated on contract");
-    }
-
-    function testAutoSwapDoesNotFireDuringBuy() public {
-        // First sell to accumulate taxes above threshold
-        vm.prank(user);
-        token.transfer(pool, 100e18);
-
-        uint256 taxBefore = token.balanceOf(address(token));
-        assertTrue(taxBefore >= 1e18, "Tax above threshold after sell");
-
-        // Buy from pool — should NOT trigger auto-swap
-        vm.prank(pool);
-        token.transfer(user2, 50e18);
-
-        assertEq(router.callCount(), 0, "No swap during buy");
-    }
-
-    function testAutoSwapSendsToTreasury() public {
-        // Accumulate taxes via sell
-        vm.prank(user);
-        token.transfer(pool, 100e18);
-
-        // Regular transfer triggers swap
-        vm.prank(user);
-        token.transfer(user2, 1e18);
-
-        assertEq(router.lastRecipient(), treasury);
-    }
-
-    function testAutoSwapDoesNotTriggerBelowThreshold() public {
-        // Set high threshold
-        manager.setTaxSwapThreshold(address(token), 1000e18);
-
-        // Small sell — tax won't meet threshold
-        vm.prank(user);
-        token.transfer(pool, 10e18); // 0.3e18 tax
-
-        // Regular transfer — still below threshold
-        vm.prank(user);
-        token.transfer(user2, 1e18);
-
-        assertEq(router.callCount(), 0, "No swap below threshold");
-    }
-
-    function testAutoSwapFailureDoesNotRevertUserTrade() public {
-        // Accumulate taxes via sell
-        vm.prank(user);
-        token.transfer(pool, 100e18);
-
-        // Make router revert
-        router.setShouldRevert(true);
-
-        uint256 user2Before = token.balanceOf(user2);
-
-        // Regular transfer should NOT revert despite swap failure
-        vm.prank(user);
-        token.transfer(user2, 10e18);
-
-        // User's trade still went through
-        assertEq(token.balanceOf(user2) - user2Before, 10e18);
-    }
-
-    function testAutoSwapQuoteFailureDoesNotRevertUserTrade() public {
-        vm.prank(user);
-        token.transfer(pool, 100e18);
-
-        router.setShouldRevertQuote(true);
-
-        uint256 taxBefore = token.balanceOf(address(token));
-        uint256 user2Before = token.balanceOf(user2);
-
-        vm.prank(user);
-        token.transfer(user2, 10e18);
-
-        assertEq(token.balanceOf(user2) - user2Before, 10e18);
-        assertEq(token.balanceOf(address(token)), taxBefore);
-        assertEq(router.callCount(), 0);
-    }
-
-    function testAutoSwapFactoryFailureDoesNotRevertUserTrade() public {
-        vm.prank(user);
-        token.transfer(pool, 100e18);
-
-        router.setShouldRevertFactory(true);
-
-        uint256 taxBefore = token.balanceOf(address(token));
-        uint256 user2Before = token.balanceOf(user2);
-
-        vm.prank(user);
-        token.transfer(user2, 10e18);
-
-        assertEq(token.balanceOf(user2) - user2Before, 10e18);
-        assertEq(token.balanceOf(address(token)), taxBefore);
-        assertEq(router.callCount(), 0);
-    }
-
-    function testAutoSwapPairLookupFailureDoesNotRevertUserTrade() public {
-        vm.prank(user);
-        token.transfer(pool, 100e18);
-
-        router.setShouldRevertPairLookup(true);
-
-        uint256 taxBefore = token.balanceOf(address(token));
-        uint256 user2Before = token.balanceOf(user2);
-
-        vm.prank(user);
-        token.transfer(user2, 10e18);
-
-        assertEq(token.balanceOf(user2) - user2Before, 10e18);
-        assertEq(token.balanceOf(address(token)), taxBefore);
-        assertEq(router.callCount(), 0);
-    }
-
-    function testAutoSwapBelowMinOutputDoesNotRevertUserTrade() public {
-        vm.prank(user);
-        token.transfer(pool, 100e18);
-
-        router.setSwapAmountOutDivisor(10_000);
-
-        uint256 taxBefore = token.balanceOf(address(token));
-        uint256 user2Before = token.balanceOf(user2);
-
-        vm.prank(user);
-        token.transfer(user2, 10e18);
-
-        assertEq(token.balanceOf(user2) - user2Before, 10e18);
-        assertEq(token.balanceOf(address(token)), taxBefore);
-        assertEq(router.callCount(), 0);
+        assertEq(token.balanceOf(treasury), taxBefore);
     }
 
     // ═══════════════════════════════════════════════
@@ -595,23 +477,6 @@ contract CaliberTokenTaxTest is Test {
         manager.setPoolTax(address(token), pool, 100, 100);
     }
 
-    function testSetDexRouter() public {
-        address newRouter = address(0xDEF1);
-        manager.setDexRouter(newRouter);
-        assertEq(manager.dexRouter(), newRouter);
-    }
-
-    function testSetTaxSwapSlippageBps() public {
-        assertEq(manager.taxSwapSlippageBps(), 1_000);
-        manager.setTaxSwapSlippageBps(250);
-        assertEq(manager.taxSwapSlippageBps(), 250);
-    }
-
-    function testSetTaxSwapSlippageBpsRejectsTooHigh() public {
-        vm.expectRevert(AmmoManager.TaxTooHigh.selector);
-        manager.setTaxSwapSlippageBps(5_001);
-    }
-
     function testSetGvAmmoStoresConfigAndAllowsDisable() public {
         vm.expectEmit(true, false, false, true);
         emit AmmoManager.gvAmmoUpdated(address(gvAmmo), 2_000);
@@ -651,9 +516,7 @@ contract CaliberTokenTaxTest is Test {
         vm.prank(user);
         token.transfer(pool, sellAmount);
 
-        // Pool gets amount minus tax
-        // Token contract gets tax
-        assertTrue(token.balanceOf(address(token)) >= expectedTax);
+        assertGe(token.balanceOf(treasury), expectedTax);
     }
 
     // ═══════════════════════════════════════════════

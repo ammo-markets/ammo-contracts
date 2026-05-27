@@ -2,13 +2,10 @@
 pragma solidity ^0.8.24;
 
 import {AmmoManager} from "./AmmoManager.sol";
-import {IDexRouter} from "./interfaces/IDexRouter.sol";
-import {IPairFactory} from "./interfaces/IPairFactory.sol";
-import {ISolidlyPair} from "./interfaces/ISolidlyPair.sol";
 
 /// @notice ERC20 token with fee-on-transfer tax for DEX trades.
 /// @dev Mint/burn restricted to its CaliberMarket. Tax config is read from AmmoManager.
-///      Accumulated taxes are auto-swapped to native AVAX via the configured DEX router.
+///      DEX taxes are sent directly to the protocol treasury.
 contract CaliberToken {
     string public name;
     string public symbol;
@@ -23,9 +20,6 @@ contract CaliberToken {
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
 
-    /// @dev Reentrancy guard for tax auto-swaps. When true, all tax logic is bypassed.
-    bool private _inSwap;
-
     error NotMarket();
     error InsufficientBalance();
     error InsufficientAllowance();
@@ -34,7 +28,6 @@ contract CaliberToken {
 
     event Transfer(address indexed from, address indexed to, uint256 amount);
     event Approval(address indexed owner, address indexed spender, uint256 amount);
-    event TaxesSold(uint256 tokensSold, address indexed recipient);
 
     modifier onlyMarket() {
         if (msg.sender != market) revert NotMarket();
@@ -90,25 +83,14 @@ contract CaliberToken {
     function _transfer(address from, address to, uint256 amount) internal {
         if (to == address(0)) revert ZeroAddress();
         if (balanceOf[from] < amount) revert InsufficientBalance();
-        // Denylist takes precedence over tax/exempt logic. Once denied, an address
-        // cannot send or receive — bridges and similar destinations are fully frozen.
         if (manager.isDenied(from) || manager.isDenied(to)) revert Denied();
 
         uint256 taxAmount = 0;
 
-        if (!_inSwap && !_isLocalExempt(from, to)) {
+        if (!_isLocalExempt(from, to)) {
             bool protocolExempt = manager.taxExempt(from) || manager.taxExempt(to) || _isGvAmmoTaxExempt(from, to);
-            if (protocolExempt) {
-                taxAmount = 0;
-            } else {
+            if (!protocolExempt) {
                 taxAmount = _determineTax(from, to, amount);
-
-                // Auto-swap only on non-DEX transfers to avoid reentering the router/pair
-                // during a buy or sell. DEX trades just accumulate tax; the next regular
-                // transfer that crosses threshold flushes it.
-                if (taxAmount == 0 && _shouldSwap()) {
-                    _sellTaxes();
-                }
             }
         }
 
@@ -117,19 +99,37 @@ contract CaliberToken {
         balanceOf[to] += receiveAmount;
         emit Transfer(from, to, receiveAmount);
 
-        if (taxAmount > 0) {
-            balanceOf[address(this)] += taxAmount;
-            emit Transfer(from, address(this), taxAmount);
-        }
+        if (taxAmount > 0) _collectTax(from, taxAmount);
     }
 
-    /// @dev Calculate tax amount by reading rates from AmmoManager.
+    function _collectTax(address from, uint256 taxAmount) internal {
+        address treasury_ = manager.treasury();
+        if (treasury_ == address(0)) {
+            _creditTax(from, address(this), taxAmount);
+            return;
+        }
+
+        _sweepHeldTax(treasury_);
+        _creditTax(from, treasury_, taxAmount);
+    }
+
+    function _sweepHeldTax(address treasury_) internal {
+        uint256 heldTax = balanceOf[address(this)];
+        if (heldTax == 0) return;
+
+        balanceOf[address(this)] = 0;
+        _creditTax(address(this), treasury_, heldTax);
+    }
+
+    function _creditTax(address from, address to, uint256 amount) internal {
+        balanceOf[to] += amount;
+        emit Transfer(from, to, amount);
+    }
+
     function _determineTax(address from, address to, uint256 amount) internal view returns (uint256) {
-        // Buy: check if `from` is a taxed pool
         (uint256 buyBps,) = manager.tokenPoolTax(address(this), from);
         if (buyBps > 0) return (amount * buyBps) / _BPS_DIVISOR;
 
-        // Sell: check if `to` is a taxed pool (only if not a buy)
         (, uint256 sellBps) = manager.tokenPoolTax(address(this), to);
         if (sellBps > 0) return (amount * sellBps) / _BPS_DIVISOR;
 
@@ -146,104 +146,10 @@ contract CaliberToken {
         return false;
     }
 
-    /// @dev Check token-local exemptions (no storage reads for cheapest checks).
-    ///      - market: CaliberMarket mint/redeem/transfer operations
-    ///      - address(this): tax swap transfers
+    /// @dev market: CaliberMarket mint/redeem/transfer operations.
     ///      Router transfers are not exempt because sells also arrive as router-mediated
     ///      user-to-pair transfers. Liquidity adds should use an exempt helper contract.
     function _isLocalExempt(address from, address to) internal view returns (bool) {
-        return from == market || to == market || from == address(this) || to == address(this);
-    }
-
-    /// @dev Check if accumulated tax balance exceeds the auto-swap threshold.
-    function _shouldSwap() internal view returns (bool) {
-        uint256 threshold = manager.taxSwapThresholds(address(this));
-        return threshold > 0 && balanceOf[address(this)] >= threshold;
-    }
-
-    /// @dev Swap accumulated tax tokens to native AVAX via the configured DEX router.
-    ///      `amountOutMin` is derived from the pair's built-in 30-minute TWAP rather
-    ///      than spot, so a same-block sandwich cannot push the reference price within
-    ///      the swap itself. Sends AVAX directly to treasury. Failures (no pair, cold
-    ///      observation buffer, swap rejection) are silently caught so user trades are
-    ///      never blocked by buyback issues.
-    function _sellTaxes() internal {
-        uint256 tokenBalance = balanceOf[address(this)];
-        if (tokenBalance == 0) return;
-
-        (
-            address router,
-            address wavax_,
-            AmmoManager.SwapPath memory swapPath,,
-            uint256 slippageBps,
-            address treasury_
-        ) = manager.getSwapConfig(address(this));
-
-        if (router == address(0) || treasury_ == address(0) || swapPath.outputToken == address(0)) return;
-        if (swapPath.outputToken != wavax_) return;
-
-        uint256 twapOut = _taxSwapTwapOut(router, wavax_, swapPath.stable, tokenBalance);
-        if (twapOut == 0) return;
-
-        uint256 amountOutMin = (twapOut * (_BPS_DIVISOR - slippageBps)) / _BPS_DIVISOR;
-
-        // Build DEX path: CaliberToken -> WAVAX. The router unwraps WAVAX to native AVAX.
-        IDexRouter.route[] memory routes = new IDexRouter.route[](1);
-        routes[0] = IDexRouter.route({from: address(this), to: wavax_, stable: swapPath.stable});
-
-        _inSwap = true;
-
-        // Approve router to pull our tokens
-        allowance[address(this)][router] = tokenBalance;
-        emit Approval(address(this), router, tokenBalance);
-
-        try IDexRouter(router)
-            .swapExactTokensForETHSupportingFeeOnTransferTokens(
-                tokenBalance, amountOutMin, routes, treasury_, block.timestamp
-            ) {
-            emit TaxesSold(tokenBalance, treasury_);
-            allowance[address(this)][router] = 0;
-            emit Approval(address(this), router, 0);
-        } catch {
-            // Swap failed — reset approval, taxes accumulate for next attempt
-            allowance[address(this)][router] = 0;
-            emit Approval(address(this), router, 0);
-        }
-
-        _inSwap = false;
-    }
-
-    function _taxSwapTwapOut(address router, address wavax_, bool stable, uint256 tokenAmount)
-        internal
-        view
-        returns (uint256)
-    {
-        address factory = _safeRouterFactory(router);
-        if (factory == address(0)) return 0;
-
-        address pair = _safeFactoryPair(factory, wavax_, stable);
-        if (pair == address(0)) return 0;
-
-        try ISolidlyPair(pair).current(address(this), tokenAmount) returns (uint256 out) {
-            return out;
-        } catch {
-            return 0;
-        }
-    }
-
-    function _safeRouterFactory(address router) internal view returns (address) {
-        try IDexRouter(router).factory() returns (address factory_) {
-            return factory_;
-        } catch {
-            return address(0);
-        }
-    }
-
-    function _safeFactoryPair(address factory, address wavax_, bool stable) internal view returns (address) {
-        try IPairFactory(factory).getPair(address(this), wavax_, stable) returns (address pair_) {
-            return pair_;
-        } catch {
-            return address(0);
-        }
+        return from == market || to == market;
     }
 }
