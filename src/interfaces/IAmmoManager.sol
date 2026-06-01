@@ -13,6 +13,8 @@ interface IAmmoManager {
     error NotPendingOwner();
     error ZeroAddress();
     error TaxTooHigh();
+    error MarketDailyMintCapIncreaseTooLarge();
+    error MarketDailyMintCapCannotBeZero();
 
     event OwnershipTransferStarted(address indexed currentOwner, address indexed newOwner);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
@@ -23,6 +25,8 @@ interface IAmmoManager {
     event MarketDailyMintCapUpdated(address indexed market, uint256 oldCap, uint256 newCap);
     event PoolTaxSet(address indexed token, address indexed pool, uint256 buyTax, uint256 sellTax);
     event TaxExemptUpdated(address indexed account, bool exempt);
+    event gvAmmoUpdated(address indexed gvAmmo, uint256 thresholdBps);
+    event DeniedUpdated(address indexed account, bool denied);
 
     function owner() external view returns (address);
     function pendingOwner() external view returns (address);
@@ -36,6 +40,9 @@ interface IAmmoManager {
     function wavax() external view returns (address);
     function tokenPoolTax(address token, address pool) external view returns (uint256 buyTax, uint256 sellTax);
     function taxExempt(address account) external view returns (bool);
+    function gvAmmo() external view returns (address);
+    function gvAmmoTaxExemptionBps() external view returns (uint256);
+    function isDenied(address account) external view returns (bool);
 
     function transferOwnership(address newOwner) external;
     function acceptOwnership() external;
@@ -47,4 +54,7 @@ interface IAmmoManager {
     function setPoolTax(address token, address pool, uint256 buyBps, uint256 sellBps) external;
     function removePoolTax(address token, address pool) external;
     function setTaxExempt(address account, bool exempt) external;
+    function setGvAmmo(address gvAmmo_, uint256 thresholdBps) external;
+    function setDenied(address account, bool denied) external;
+    function isGvAmmoTaxExempt(address account) external view returns (bool);
 }

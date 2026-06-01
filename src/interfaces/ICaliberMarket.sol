@@ -78,10 +78,9 @@ interface ICaliberMarket {
         address indexed user,
         uint256 usdcAmount,
         uint256 tokenAmount,
-        uint256 priceUsed,
-        uint256 refundAmount
+        uint256 priceUsed
     );
-    event MintProcessing(uint256 indexed orderId, address indexed user, uint256 treasuryAmount, uint256 refundAmount);
+    event MintProcessing(uint256 indexed orderId, address indexed user, uint256 treasuryAmount);
     event MintCanceled(uint256 indexed orderId, address indexed user, uint256 refundAmount, uint8 reasonCode);
     event RedeemRequested(uint256 indexed orderId, address indexed user, uint256 tokenAmount, uint64 deadline);
     event RedeemFinalized(uint256 indexed orderId, address indexed user, uint256 burnedTokens);
@@ -104,6 +103,7 @@ interface ICaliberMarket {
     function manager() external view returns (AmmoManager);
     function usdc() external view returns (IERC20);
     function usdcDecimals() external view returns (uint8);
+    function usdcScale() external view returns (uint256);
     function oracle() external view returns (IPriceOracle);
     function token() external view returns (CaliberToken);
     function caliberId() external view returns (bytes32);

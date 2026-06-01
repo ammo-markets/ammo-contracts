@@ -8,10 +8,10 @@ interface ICaliberToken {
     error InsufficientBalance();
     error InsufficientAllowance();
     error ZeroAddress();
+    error Denied();
 
     event Transfer(address indexed from, address indexed to, uint256 amount);
     event Approval(address indexed owner, address indexed spender, uint256 amount);
-    event TaxesTransferred(uint256 amount, address indexed treasury);
 
     function name() external view returns (string memory);
     function symbol() external view returns (string memory);

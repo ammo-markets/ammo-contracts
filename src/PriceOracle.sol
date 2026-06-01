@@ -74,14 +74,19 @@ contract PriceOracle is IPriceOracle {
         if (!manager.isKeeper(msg.sender)) revert NotKeeper();
         if (marketAddrs.length != pricesX18.length) revert ArrayLengthMismatch();
 
+        uint256 timestamp = block.timestamp;
         for (uint256 i; i < marketAddrs.length; ++i) {
-            if (!markets[marketAddrs[i]].registered) revert NotRegistered();
+            address market = marketAddrs[i];
+            uint256 price = pricesX18[i];
+            MarketData storage data = markets[market];
 
-            uint256 oldPrice = markets[marketAddrs[i]].price;
-            markets[marketAddrs[i]].price = pricesX18[i];
-            markets[marketAddrs[i]].updatedAt = block.timestamp;
+            if (!data.registered) revert NotRegistered();
 
-            emit PriceUpdated(marketAddrs[i], oldPrice, pricesX18[i], block.timestamp);
+            uint256 oldPrice = data.price;
+            data.price = price;
+            data.updatedAt = timestamp;
+
+            emit PriceUpdated(market, oldPrice, price, timestamp);
         }
     }
 

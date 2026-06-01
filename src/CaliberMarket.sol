@@ -16,10 +16,12 @@ contract CaliberMarket is ICaliberMarket {
     uint256 public constant MAX_STALENESS = 6 hours;
     uint256 public constant MIN_MINT_DEADLINE = 24 hours;
     uint256 public constant AMMO_SQUARED_EXIT_BPS = 9_500;
+    uint256 public constant BPS_DIVISOR = 10_000;
 
     AmmoManager public immutable manager;
     IERC20 public immutable usdc;
     uint8 public immutable usdcDecimals;
+    uint256 public immutable usdcScale;
     IPriceOracle public immutable oracle;
     CaliberToken public immutable token;
     bytes32 public immutable caliberId;
@@ -68,6 +70,7 @@ contract CaliberMarket is ICaliberMarket {
         manager = AmmoManager(config.manager);
         usdc = IERC20(config.usdc);
         usdcDecimals = config.usdcDecimals;
+        usdcScale = 10 ** (18 - config.usdcDecimals);
         oracle = IPriceOracle(config.oracle);
         caliberId = config.caliberId;
         minMintRounds = config.minMintRounds;
@@ -123,7 +126,7 @@ contract CaliberMarket is ICaliberMarket {
 
         usdc.safeTransfer(treasury, order.usdcAmount);
 
-        emit MintProcessing(orderId, order.user, order.usdcAmount, 0);
+        emit MintProcessing(orderId, order.user, order.usdcAmount);
     }
 
     /// @notice Confirm an order is backed by real ammo and mint the caliber tokens.
@@ -139,7 +142,7 @@ contract CaliberMarket is ICaliberMarket {
 
         token.mint(order.user, tokenAmount);
 
-        emit MintFinalized(orderId, order.user, order.usdcAmount, tokenAmount, order.requestPrice, 0);
+        emit MintFinalized(orderId, order.user, order.usdcAmount, tokenAmount, order.requestPrice);
     }
 
     /// @notice Cancel a mint, refunding escrow before processing or caller-funded USDC after processing.
@@ -292,18 +295,16 @@ contract CaliberMarket is ICaliberMarket {
     }
 
     function _tokensForUsdc(uint256 usdcAmount, uint256 price) internal view returns (uint256) {
-        uint256 scale = 10 ** (18 - usdcDecimals);
-        return (usdcAmount * scale * 1e18) / price;
+        return (usdcAmount * usdcScale * 1e18) / price;
     }
 
     function _usdcForTokens(uint256 tokenAmount, uint256 price) internal view returns (uint256) {
-        uint256 scale = 10 ** (18 - usdcDecimals);
-        return (tokenAmount * price) / (scale * 1e18);
+        return (tokenAmount * price) / (usdcScale * 1e18);
     }
 
     function _exitQuote(uint256 tokenAmount, uint256 price) internal view returns (uint256 payoutUsdc) {
         uint256 grossUsdc = _usdcForTokens(tokenAmount, price);
-        payoutUsdc = (grossUsdc * AMMO_SQUARED_EXIT_BPS) / 10_000;
+        payoutUsdc = (grossUsdc * AMMO_SQUARED_EXIT_BPS) / BPS_DIVISOR;
     }
 
     function _consumeDailyMintCapacity(uint256 usdcAmount) internal {

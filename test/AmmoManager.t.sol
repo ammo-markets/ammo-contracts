@@ -171,6 +171,15 @@ contract AmmoManagerTest is Test {
         assertEq(manager.marketDailyMintCapUsdc(alice), 1e6);
     }
 
+    function testSetMarketDailyMintCapRevertsWhenExistingCapSetToZero() public {
+        manager.setMarketDailyMintCap(alice, 10_000e6);
+
+        vm.expectRevert(AmmoManager.MarketDailyMintCapCannotBeZero.selector);
+        manager.setMarketDailyMintCap(alice, 0);
+
+        assertEq(manager.marketDailyMintCapUsdc(alice), 10_000e6);
+    }
+
     function testSetMarketDailyMintCapInitialSetUnrestricted() public {
         manager.setMarketDailyMintCap(alice, 1_000_000e6);
 

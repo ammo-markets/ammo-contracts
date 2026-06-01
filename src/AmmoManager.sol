@@ -62,6 +62,7 @@ contract AmmoManager {
     error ZeroAddress();
     error TaxTooHigh();
     error MarketDailyMintCapIncreaseTooLarge();
+    error MarketDailyMintCapCannotBeZero();
 
     // ── Events (core) ───────────────────────────────
 
@@ -148,6 +149,7 @@ contract AmmoManager {
     function setMarketDailyMintCap(address market, uint256 capUsdc) external onlyOwner {
         if (market == address(0)) revert ZeroAddress();
         uint256 oldCap = marketDailyMintCapUsdc[market];
+        if (oldCap != 0 && capUsdc == 0) revert MarketDailyMintCapCannotBeZero();
         if (oldCap != 0 && capUsdc > oldCap) {
             uint256 maxCap = oldCap + (oldCap * MAX_MINT_CAP_INCREASE_BPS) / BPS_DIVISOR;
             if (capUsdc > maxCap) revert MarketDailyMintCapIncreaseTooLarge();
