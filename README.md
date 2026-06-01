@@ -1,6 +1,6 @@
 # Ammo Markets — Smart Contracts
 
-DeFi protocol for tokenized ammunition trading on Avalanche C-Chain. Users escrow USDC in a keeper-finalized mint flow to receive per-caliber ammo tokens (e.g., 9mm Practice, 5.56 NATO), redeem tokens for real-world ammo fulfillment, or request a USDC exit through a shared liquidity pool. The protocol includes fee-on-transfer taxes for DEX trades and a keeper-updated on-chain price oracle.
+DeFi protocol for tokenized ammunition trading on Avalanche C-Chain. Users escrow USDC in a keeper-processed mint flow to receive per-caliber ammo tokens (e.g., 9mm Practice, 5.56 NATO), redeem tokens for real-world ammo fulfillment, or request a admin-finalized USDC exit. The protocol includes fee-on-transfer taxes for DEX trades, per-market daily mint caps, and a keeper-updated on-chain price oracle.
 
 - **Solidity:** 0.8.24
 - **Framework:** [Foundry](https://book.getfoundry.sh/)
@@ -39,7 +39,7 @@ Copy `.env.example` to `.env`:
 ## Core Contracts
 
 ```
-AmmoManager                          Central admin — roles, tax config, denylist
+AmmoManager                          Central admin — roles, treasury, tax config, caps, denylist
   │
   ├── AmmoFactory                    Deploys per-caliber market + token pairs
   │     └── CaliberMarket            Mint/redeem/exit order book per caliber
@@ -54,9 +54,9 @@ The most important files for understanding the protocol:
 
 | Contract                       | File                                 | What It Does                                                                                                                                                                                     |
 | ------------------------------ | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **AmmoManager**                | `src/AmmoManager.sol`                | Global config hub. All contracts read roles (owner, keeper, guardian), tax rates, and the transfer denylist from here.                                                                           |
-| **CaliberMarket**              | `src/CaliberMarket.sol`              | Where users interact. 2-step mint (USDC escrow → keeper finalizes), 2-step redeem for real-world ammo fulfillment, and 2-step exit (tokens locked → keeper pays USDC/USDT directly on finalize). |
-| **CaliberToken**               | `src/CaliberToken.sol`               | Per-caliber ERC20 with buy/sell tax on DEX trades. Taxes accumulate and auto-swap to WAVAX → treasury. Only its CaliberMarket can mint/burn.                                                     |
+| **AmmoManager**                | `src/AmmoManager.sol`                | Global config hub. All contracts read roles (owner, keeper, guardian), treasury, tax rates, gvAMMO tax exemptions, daily mint caps, and the transfer denylist from here.                          |
+| **CaliberMarket**              | `src/CaliberMarket.sol`              | Where users interact. 3-step mint (USDC escrow → keeper sweeps escrow to treasury → keeper finalizes token mint), 2-step redeem for real-world ammo fulfillment, and 2-step USDC exit.             |
+| **CaliberToken**               | `src/CaliberToken.sol`               | Per-caliber ERC20 with buy/sell tax on DEX trades. Taxes are credited to the protocol treasury, or held by the token until treasury is set. Only its CaliberMarket can mint/burn.                |
 | **PriceOracle**                | `src/PriceOracle.sol`                | Stores per-market prices at 1e18 scale. An off-chain keeper (worker) batches updates via `setBatchPrices`. CaliberMarket rejects prices older than 6 hours.                                      |
 | **AmmoLiquidityManager**       | `src/AmmoLiquidityManager.sol`       | Tax-exempt helper for adding and removing DEX liquidity.                                                                                                                                          |
 
@@ -80,15 +80,16 @@ make mainnet_deploy    # Deploy + verify on mainnet
 
 ### Security Patterns
 
-| Pattern                 | Where                           | Purpose                                        |
-| ----------------------- | ------------------------------- | ---------------------------------------------- |
-| Reentrancy guard        | CaliberMarket                   | `_locked` flag on state-changing user calls    |
-| 2-step ownership        | AmmoManager                     | Pending owner must `acceptOwnership()`         |
-| Set-once initialization | AmmoFactory                     | Prevents re-wiring after deploy                |
-| Denylist                | CaliberToken                    | Blocks bridging/export of tokens               |
-| Price staleness         | CaliberMarket                   | Rejects oracle prices older than 6 hours       |
-| Safe ERC20 transfers    | CaliberMarket, CaliberToken     | Low-level call pattern for non-standard tokens |
-| Try/catch tax swap      | CaliberToken                    | DEX failures never revert user transfers       |
+| Pattern                 | Where                          | Purpose                                                   |
+| ----------------------- | ------------------------------ | --------------------------------------------------------- |
+| Reentrancy guard        | CaliberMarket                  | `_locked` flag on state-changing user calls               |
+| 2-step ownership        | AmmoManager                    | Pending owner must `acceptOwnership()`                    |
+| Set-once initialization | PriceOracle                    | Prevents re-wiring the factory after deploy               |
+| Denylist                | CaliberToken                   | Blocks bridging/export of tokens                          |
+| Price staleness         | CaliberMarket                  | Rejects oracle prices older than 6 hours                  |
+| Daily mint caps         | AmmoManager, CaliberMarket     | Limits gross mint requests per market per chain day       |
+| Safe ERC20 transfers    | CaliberMarket, AmmoLiquidityManager | Handles non-standard payment, token, and LP token flows   |
+| Treasury-held taxes     | CaliberToken                   | Routes DEX transfer tax to treasury without swap handling |
 
 ### Dependencies
 
