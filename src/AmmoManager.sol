@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-interface IGvAmmo {
-    function balanceOf(address account) external view returns (uint256);
-
-    function totalSupply() external view returns (uint256);
-}
-
-/// @notice Global ops/admin, role registry, and centralized tax configuration for the Ammo Exchange protocol.
+/// @notice Global ops/admin, role registry, and centralized tax configuration for Ammo Market.
 /// @dev All CaliberMarket and CaliberToken instances reference this contract for access control and tax config.
 ///      Owner should be a multisig in production.
 contract AmmoManager {
@@ -197,9 +192,9 @@ contract AmmoManager {
         uint256 thresholdBps = gvAmmoTaxExemptionBps;
         if (gvAmmo_ == address(0) || thresholdBps == 0) return false;
 
-        try IGvAmmo(gvAmmo_).balanceOf(account) returns (uint256 gvBalance) {
+        try IERC20(gvAmmo_).balanceOf(account) returns (uint256 gvBalance) {
             if (gvBalance == 0) return false;
-            try IGvAmmo(gvAmmo_).totalSupply() returns (uint256 gvSupply) {
+            try IERC20(gvAmmo_).totalSupply() returns (uint256 gvSupply) {
                 if (gvSupply == 0) return false;
                 return (gvBalance * BPS_DIVISOR) >= (gvSupply * thresholdBps);
             } catch {

@@ -5,9 +5,9 @@ import "forge-std/Test.sol";
 import "../src/AmmoManager.sol";
 import "../src/CaliberMarket.sol";
 import "../src/CaliberToken.sol";
+import "../src/interfaces/ICaliberMarket.sol";
 import "./MockPriceOracle.sol";
 import "./MockERC20.sol";
-import "./MockEmissionController.sol";
 
 contract CaliberMarketTest is Test {
     AmmoManager manager;
@@ -15,13 +15,13 @@ contract CaliberMarketTest is Test {
     CaliberToken ammoToken;
     MockERC20 usdc;
     MockPriceOracle oracle;
-    MockEmissionController emissionController;
 
     address user = address(0xBEEF);
     address keeper = address(0xCA11);
     address feeRecipient = address(0xFEE1);
     address guardian = address(0x911);
     address treasury = address(0x73EA5);
+    address caller = address(0xCA7);
 
     bytes32 constant CALIBER_9MM = bytes32("9MM");
     uint256 constant ORACLE_PRICE = 21e16; // $0.21 per round
@@ -32,7 +32,6 @@ contract CaliberMarketTest is Test {
     function setUp() public {
         usdc = new MockERC20("USD Coin", "USDC", 6);
         oracle = new MockPriceOracle(ORACLE_PRICE);
-        emissionController = new MockEmissionController(address(new MockERC20("Protocol", "AMMO", 18)));
 
         manager = new AmmoManager(feeRecipient, address(0xAA0C));
         manager.setKeeper(keeper, true);
@@ -58,96 +57,92 @@ contract CaliberMarketTest is Test {
         usdc.approve(address(market), 100e6);
 
         vm.prank(user);
-        uint256 orderId = market.startMint(100e6, uint64(block.timestamp + 1 days));
+        uint256 orderId = market.startMint(100e6, _deadline());
 
         assertEq(usdc.balanceOf(address(market)), 100e6);
         assertEq(ammoToken.balanceOf(user), 0);
         assertEq(market.nextMintOrderId(), 2);
 
-        (address orderUser, uint256 usdcAmount, uint256 requestPrice,,,,, CaliberMarket.OrderStatus status) =
+        (address orderUser, uint256 usdcAmount, uint256 requestPrice,,, ICaliberMarket.OrderStatus status) =
             market.mintOrders(orderId);
         assertEq(orderUser, user);
         assertEq(usdcAmount, 100e6);
         assertEq(requestPrice, ORACLE_PRICE);
-        assertEq(uint256(status), uint256(CaliberMarket.OrderStatus.Requested));
+        assertEq(uint256(status), uint256(ICaliberMarket.OrderStatus.Requested));
     }
 
-    function testStartMintAllowsZeroDeadline() public {
+    function testStartMintRejectsZeroDeadline() public {
         vm.prank(user);
         usdc.approve(address(market), 100e6);
 
         vm.prank(user);
-        uint256 orderId = market.startMint(100e6, 0);
-
-        (,,,, uint64 deadline,,, CaliberMarket.OrderStatus status) = market.mintOrders(orderId);
-        assertEq(deadline, 0);
-        assertEq(uint256(status), uint256(CaliberMarket.OrderStatus.Requested));
+        vm.expectRevert(ICaliberMarket.DeadlineTooShort.selector);
+        market.startMint(100e6, 0);
     }
 
-    function testStartMintRequiresMinimumNonZeroDeadline() public {
+    function testStartMintRequiresDeadlineGreaterThanMinimum() public {
         vm.prank(user);
         usdc.approve(address(market), 300e6);
 
         vm.prank(user);
-        vm.expectRevert(CaliberMarket.DeadlineTooShort.selector);
+        vm.expectRevert(ICaliberMarket.DeadlineTooShort.selector);
         market.startMint(100e6, uint64(block.timestamp + MIN_MINT_DEADLINE - 1));
 
         vm.prank(user);
-        uint256 orderId = market.startMint(100e6, uint64(block.timestamp + MIN_MINT_DEADLINE));
+        vm.expectRevert(ICaliberMarket.DeadlineTooShort.selector);
+        market.startMint(100e6, uint64(block.timestamp + MIN_MINT_DEADLINE));
 
-        (,,,, uint64 deadline,,, CaliberMarket.OrderStatus status) = market.mintOrders(orderId);
-        assertEq(deadline, uint64(block.timestamp + MIN_MINT_DEADLINE));
-        assertEq(uint256(status), uint256(CaliberMarket.OrderStatus.Requested));
+        vm.prank(user);
+        uint256 orderId = market.startMint(100e6, _deadline());
+
+        (,,, uint64 deadline,, ICaliberMarket.OrderStatus status) = market.mintOrders(orderId);
+        assertEq(deadline, _deadline());
+        assertEq(uint256(status), uint256(ICaliberMarket.OrderStatus.Requested));
     }
 
     function testFinalizeMintUsesRequestPriceAndDistributesFunds() public {
         vm.prank(user);
         usdc.approve(address(market), 100e6);
         vm.prank(user);
-        uint256 orderId = market.startMint(100e6, 0);
+        uint256 orderId = market.startMint(100e6, _deadline());
 
         oracle.setPrice(25e16);
 
         vm.prank(keeper);
+        market.processMint(orderId);
+        vm.prank(keeper);
         market.finalizeMint(orderId);
 
         uint256 tokenAmount = (100e6 * 1e12 * 1e18) / ORACLE_PRICE;
-        uint256 actualUsdc = (tokenAmount * ORACLE_PRICE) / (1e12 * 1e18);
-        uint256 refund = 100e6 - actualUsdc;
 
         assertEq(ammoToken.balanceOf(user), tokenAmount);
-        assertEq(usdc.balanceOf(treasury), actualUsdc);
-        assertEq(usdc.balanceOf(user), 900e6 + refund);
+        assertEq(usdc.balanceOf(treasury), 100e6);
+        assertEq(usdc.balanceOf(user), 900e6);
         assertEq(usdc.balanceOf(address(market)), 0);
     }
 
-    function testMintDustRefund() public {
+    function testMintKeepsFullDepositWhenTokenAmountRoundsDown() public {
         oracle.setPrice(30e16);
         vm.prank(user);
         usdc.approve(address(market), 100e6);
         vm.prank(user);
-        uint256 orderId = market.startMint(100e6, 0);
+        uint256 orderId = market.startMint(100e6, _deadline());
 
-        uint256 userBeforeFinalize = usdc.balanceOf(user);
-
+        vm.prank(keeper);
+        market.processMint(orderId);
         vm.prank(keeper);
         market.finalizeMint(orderId);
 
-        uint256 tokenAmount = ammoToken.balanceOf(user);
-        uint256 actualUsdc = (tokenAmount * 30e16) / (1e12 * 1e18);
-
         assertTrue(ammoToken.balanceOf(user) > 0);
-        assertTrue(usdc.balanceOf(user) > userBeforeFinalize);
+        assertEq(usdc.balanceOf(user), 900e6);
         assertEq(usdc.balanceOf(address(market)), 0);
-        assertEq(emissionController.caliberVolume(), actualUsdc);
-        assertLt(emissionController.caliberVolume(), 100e6);
     }
 
     function testCancelMintRefundsFullAmount() public {
         vm.prank(user);
         usdc.approve(address(market), 100e6);
         vm.prank(user);
-        uint256 orderId = market.startMint(100e6, 0);
+        uint256 orderId = market.startMint(100e6, _deadline());
 
         vm.prank(keeper);
         market.cancelMint(orderId, 2);
@@ -158,7 +153,7 @@ contract CaliberMarketTest is Test {
     }
 
     function testUserCanCancelMintAfterDeadline() public {
-        uint64 deadline = uint64(block.timestamp + market.MIN_MINT_DEADLINE());
+        uint64 deadline = _deadline();
         vm.prank(user);
         usdc.approve(address(market), 100e6);
         vm.prank(user);
@@ -173,30 +168,46 @@ contract CaliberMarketTest is Test {
     }
 
     function testUserCannotCancelMintBeforeDeadline() public {
-        uint64 deadline = uint64(block.timestamp + market.MIN_MINT_DEADLINE());
+        uint64 deadline = _deadline();
         vm.prank(user);
         usdc.approve(address(market), 100e6);
         vm.prank(user);
         uint256 orderId = market.startMint(100e6, deadline);
 
         vm.prank(user);
-        vm.expectRevert(CaliberMarket.DeadlineNotExpired.selector);
+        vm.expectRevert(ICaliberMarket.NotKeeper.selector);
         market.cancelMint(orderId, 0);
     }
 
-    function testNonUserCannotCancelMintAsExpiredUser() public {
+    function testNonKeeperCannotCancelMintBeforeDeadline() public {
         vm.prank(user);
         usdc.approve(address(market), 100e6);
         vm.prank(user);
-        uint256 orderId = market.startMint(100e6, 0);
+        uint256 orderId = market.startMint(100e6, _deadline());
 
         vm.prank(address(0xBAD));
-        vm.expectRevert(CaliberMarket.InvalidUser.selector);
+        vm.expectRevert(ICaliberMarket.NotKeeper.selector);
         market.cancelMint(orderId, 0);
     }
 
-    function testFinalizeMintRespectsDeadline() public {
-        uint64 deadline = uint64(block.timestamp + market.MIN_MINT_DEADLINE());
+    function testAnyoneCanCancelMintAfterDeadline() public {
+        uint64 deadline = _deadline();
+        vm.prank(user);
+        usdc.approve(address(market), 100e6);
+        vm.prank(user);
+        uint256 orderId = market.startMint(100e6, deadline);
+
+        vm.warp(deadline + 1);
+
+        vm.prank(caller);
+        market.cancelMint(orderId, 0);
+
+        assertEq(usdc.balanceOf(user), 1_000e6);
+        assertEq(usdc.balanceOf(address(market)), 0);
+    }
+
+    function testProcessMintRespectsDeadline() public {
+        uint64 deadline = _deadline();
         vm.prank(user);
         usdc.approve(address(market), 100e6);
         vm.prank(user);
@@ -205,7 +216,40 @@ contract CaliberMarketTest is Test {
         vm.warp(deadline + 1);
 
         vm.prank(keeper);
-        vm.expectRevert(CaliberMarket.DeadlineExpired.selector);
+        vm.expectRevert(ICaliberMarket.DeadlineExpired.selector);
+        market.processMint(orderId);
+    }
+
+    function testFinalizeMintIgnoresDeadlineOnceProcessing() public {
+        uint64 deadline = _deadline();
+        vm.prank(user);
+        usdc.approve(address(market), 100e6);
+        vm.prank(user);
+        uint256 orderId = market.startMint(100e6, deadline);
+
+        // Commit the order before the deadline...
+        vm.prank(keeper);
+        market.processMint(orderId);
+
+        // ...then finalize after it: a committed order is never deadline-blocked.
+        vm.warp(deadline + 1);
+        vm.prank(keeper);
+        market.finalizeMint(orderId);
+
+        (,,,,, ICaliberMarket.OrderStatus status) = market.mintOrders(orderId);
+        assertEq(uint256(status), uint256(ICaliberMarket.OrderStatus.Finalized));
+        assertGt(ammoToken.balanceOf(user), 0);
+    }
+
+    function testFinalizeMintRevertsBeforeProcessing() public {
+        vm.prank(user);
+        usdc.approve(address(market), 100e6);
+        vm.prank(user);
+        uint256 orderId = market.startMint(100e6, _deadline());
+
+        // Skipping processMint must block finalize — funds were never committed.
+        vm.prank(keeper);
+        vm.expectRevert(ICaliberMarket.InvalidStatus.selector);
         market.finalizeMint(orderId);
     }
 
@@ -215,8 +259,8 @@ contract CaliberMarketTest is Test {
         usdc.approve(address(market), 100e6);
 
         vm.prank(user);
-        vm.expectRevert(CaliberMarket.StalePrice.selector);
-        market.startMint(100e6, 0);
+        vm.expectRevert(ICaliberMarket.StalePrice.selector);
+        market.startMint(100e6, _deadline());
     }
 
     function testStartMintZeroPriceReverts() public {
@@ -225,8 +269,8 @@ contract CaliberMarketTest is Test {
         usdc.approve(address(market), 100e6);
 
         vm.prank(user);
-        vm.expectRevert(CaliberMarket.InvalidPrice.selector);
-        market.startMint(100e6, 0);
+        vm.expectRevert(ICaliberMarket.InvalidPrice.selector);
+        market.startMint(100e6, _deadline());
     }
 
     function testStartMintMinRoundsNotMet() public {
@@ -235,11 +279,11 @@ contract CaliberMarketTest is Test {
         usdc.approve(address(market), 100e6);
 
         vm.prank(user);
-        vm.expectRevert(CaliberMarket.MinMintNotMet.selector);
-        market.startMint(100e6, 0);
+        vm.expectRevert(ICaliberMarket.MinMintNotMet.selector);
+        market.startMint(100e6, _deadline());
     }
 
-    function testFinalizeMintTreasuryNotSetReverts() public {
+    function testProcessMintTreasuryNotSetReverts() public {
         AmmoManager freshManager = new AmmoManager(feeRecipient, address(0xAA0C));
         freshManager.setKeeper(keeper, true);
         CaliberMarket freshMarket = _newMarket(freshManager, oracle, "Ammo 9MM", "MO9MM", 50);
@@ -249,21 +293,21 @@ contract CaliberMarketTest is Test {
         vm.prank(user);
         usdc.approve(address(freshMarket), 100e6);
         vm.prank(user);
-        uint256 orderId = freshMarket.startMint(100e6, 0);
+        uint256 orderId = freshMarket.startMint(100e6, _deadline());
 
         vm.prank(keeper);
-        vm.expectRevert(CaliberMarket.TreasuryNotSet.selector);
-        freshMarket.finalizeMint(orderId);
+        vm.expectRevert(ICaliberMarket.TreasuryNotSet.selector);
+        freshMarket.processMint(orderId);
     }
 
     function testFinalizeMintOnlyKeeper() public {
         vm.prank(user);
         usdc.approve(address(market), 100e6);
         vm.prank(user);
-        uint256 orderId = market.startMint(100e6, 0);
+        uint256 orderId = market.startMint(100e6, _deadline());
 
         vm.prank(user);
-        vm.expectRevert(CaliberMarket.NotKeeper.selector);
+        vm.expectRevert(ICaliberMarket.NotKeeper.selector);
         market.finalizeMint(orderId);
     }
 
@@ -274,8 +318,8 @@ contract CaliberMarketTest is Test {
         usdc.approve(address(cappedMarket), 100e6);
 
         vm.prank(user);
-        vm.expectRevert(CaliberMarket.DailyMintCapExceeded.selector);
-        cappedMarket.startMint(100e6, 0);
+        vm.expectRevert(ICaliberMarket.DailyMintCapExceeded.selector);
+        cappedMarket.startMint(100e6, _deadline());
     }
 
     function testStartMintConsumesDailyGrossCap() public {
@@ -285,17 +329,17 @@ contract CaliberMarketTest is Test {
         usdc.approve(address(market), 200e6);
 
         vm.prank(user);
-        market.startMint(100e6, 0);
+        market.startMint(100e6, _deadline());
 
         assertEq(market.dailyMintDay(), block.timestamp / 1 days);
         assertEq(market.dailyMintUsedUsdc(), 100e6);
 
         vm.prank(user);
-        vm.expectRevert(CaliberMarket.DailyMintCapExceeded.selector);
-        market.startMint(51e6, 0);
+        vm.expectRevert(ICaliberMarket.DailyMintCapExceeded.selector);
+        market.startMint(51e6, _deadline());
 
         vm.prank(user);
-        market.startMint(50e6, 0);
+        market.startMint(50e6, _deadline());
         assertEq(market.dailyMintUsedUsdc(), 150e6);
     }
 
@@ -306,13 +350,13 @@ contract CaliberMarketTest is Test {
         usdc.approve(address(market), 200e6);
 
         vm.prank(user);
-        market.startMint(100e6, 0);
+        market.startMint(100e6, _deadline());
 
         vm.warp(((block.timestamp / 1 days) + 1) * 1 days);
         oracle.setPrice(ORACLE_PRICE);
 
         vm.prank(user);
-        market.startMint(100e6, 0);
+        market.startMint(100e6, _deadline());
 
         assertEq(market.dailyMintDay(), block.timestamp / 1 days);
         assertEq(market.dailyMintUsedUsdc(), 100e6);
@@ -325,7 +369,7 @@ contract CaliberMarketTest is Test {
         usdc.approve(address(market), 200e6);
 
         vm.prank(user);
-        uint256 orderId = market.startMint(100e6, 0);
+        uint256 orderId = market.startMint(100e6, _deadline());
 
         vm.prank(keeper);
         market.cancelMint(orderId, 1);
@@ -333,9 +377,102 @@ contract CaliberMarketTest is Test {
         assertEq(market.dailyMintUsedUsdc(), 0);
 
         vm.prank(user);
-        market.startMint(100e6, 0);
+        market.startMint(100e6, _deadline());
 
         assertEq(market.dailyMintUsedUsdc(), 100e6);
+    }
+
+    function testProcessMintSweepsFullDepositToTreasury() public {
+        uint256 price = 30e16; // price that does not divide 100e6 evenly
+        oracle.setPrice(price);
+        vm.prank(user);
+        usdc.approve(address(market), 100e6);
+        vm.prank(user);
+        uint256 orderId = market.startMint(100e6, _deadline());
+
+        uint256 tokenAmount = (uint256(100e6) * 1e12 * 1e18) / price;
+        assertLt((tokenAmount * price) / (1e12 * 1e18), 100e6);
+
+        vm.prank(keeper);
+        market.processMint(orderId);
+
+        // Funds committed: treasury holds the full deposit, contract custodies nothing,
+        // and no tokens exist yet.
+        assertEq(usdc.balanceOf(treasury), 100e6);
+        assertEq(usdc.balanceOf(user), 900e6);
+        assertEq(usdc.balanceOf(address(market)), 0);
+        assertEq(ammoToken.balanceOf(user), 0);
+
+        (,,,,, ICaliberMarket.OrderStatus status) = market.mintOrders(orderId);
+        assertEq(uint256(status), uint256(ICaliberMarket.OrderStatus.Processing));
+
+        vm.prank(keeper);
+        market.finalizeMint(orderId);
+    }
+
+    function testProcessMintOnlyKeeper() public {
+        vm.prank(user);
+        usdc.approve(address(market), 100e6);
+        vm.prank(user);
+        uint256 orderId = market.startMint(100e6, _deadline());
+
+        vm.prank(user);
+        vm.expectRevert(ICaliberMarket.NotKeeper.selector);
+        market.processMint(orderId);
+    }
+
+    function testProcessMintRequiresRequestedStatus() public {
+        vm.prank(user);
+        usdc.approve(address(market), 100e6);
+        vm.prank(user);
+        uint256 orderId = market.startMint(100e6, _deadline());
+
+        vm.prank(keeper);
+        market.processMint(orderId);
+
+        // Already Processing — a second processMint must revert.
+        vm.prank(keeper);
+        vm.expectRevert(ICaliberMarket.InvalidStatus.selector);
+        market.processMint(orderId);
+    }
+
+    function testCancelMintWhileProcessingRefundsFromCaller() public {
+        uint64 deadline = _deadline();
+        vm.prank(user);
+        usdc.approve(address(market), 100e6);
+        vm.prank(user);
+        uint256 orderId = market.startMint(100e6, deadline);
+
+        vm.prank(keeper);
+        market.processMint(orderId);
+
+        usdc.mint(caller, 100e6);
+        vm.prank(caller);
+        usdc.approve(address(market), 100e6);
+        vm.prank(caller);
+        market.cancelMint(orderId, 0);
+
+        assertEq(usdc.balanceOf(user), 1_000e6);
+        assertEq(usdc.balanceOf(caller), 0);
+        assertEq(usdc.balanceOf(treasury), 100e6);
+        assertEq(ammoToken.balanceOf(user), 0);
+
+        (,,,,, ICaliberMarket.OrderStatus status) = market.mintOrders(orderId);
+        assertEq(uint256(status), uint256(ICaliberMarket.OrderStatus.Canceled));
+    }
+
+    function testCancelMintWhileProcessingRequiresCallerFunding() public {
+        vm.prank(user);
+        usdc.approve(address(market), 100e6);
+        vm.prank(user);
+        uint256 orderId = market.startMint(100e6, _deadline());
+
+        vm.prank(keeper);
+        market.processMint(orderId);
+
+        vm.prank(caller);
+        vm.expectRevert();
+        market.cancelMint(orderId, 0);
     }
 
     // ── Redeem ──────────────────────────────────────
@@ -347,7 +484,7 @@ contract CaliberMarketTest is Test {
         vm.prank(user);
         ammoToken.approve(address(market), escrowed);
         vm.prank(user);
-        uint256 orderId = market.startRedeem(escrowed, 0);
+        uint256 orderId = market.startRedeem(escrowed, _deadline());
 
         uint256 supplyBefore = ammoToken.totalSupply();
 
@@ -365,7 +502,7 @@ contract CaliberMarketTest is Test {
         vm.prank(user);
         ammoToken.approve(address(market), 100e18);
         vm.prank(user);
-        uint256 orderId = market.startRedeem(100e18, 0);
+        uint256 orderId = market.startRedeem(100e18, _deadline());
 
         vm.prank(keeper);
         market.cancelRedeem(orderId, 2);
@@ -377,7 +514,7 @@ contract CaliberMarketTest is Test {
     function testUserCanCancelRedeemAfterDeadline() public {
         _mintTokensToUser(user);
         uint256 balBefore = ammoToken.balanceOf(user);
-        uint64 deadline = uint64(block.timestamp + 60);
+        uint64 deadline = _deadline();
 
         vm.prank(user);
         ammoToken.approve(address(market), 100e18);
@@ -392,19 +529,34 @@ contract CaliberMarketTest is Test {
         assertEq(ammoToken.balanceOf(user), balBefore);
     }
 
+    function testStartRedeemRequiresDeadlineGreaterThanMinimum() public {
+        _mintTokensToUser(user);
+
+        vm.prank(user);
+        ammoToken.approve(address(market), 100e18);
+
+        vm.prank(user);
+        vm.expectRevert(ICaliberMarket.DeadlineTooShort.selector);
+        market.startRedeem(100e18, 0);
+
+        vm.prank(user);
+        vm.expectRevert(ICaliberMarket.DeadlineTooShort.selector);
+        market.startRedeem(100e18, uint64(block.timestamp + MIN_MINT_DEADLINE));
+    }
+
     function testCannotFinalizeRedeemTwice() public {
         _mintTokensToUser(user);
 
         vm.prank(user);
         ammoToken.approve(address(market), 100e18);
         vm.prank(user);
-        uint256 orderId = market.startRedeem(100e18, 0);
+        uint256 orderId = market.startRedeem(100e18, _deadline());
 
         vm.prank(keeper);
         market.finalizeRedeem(orderId);
 
         vm.prank(keeper);
-        vm.expectRevert(CaliberMarket.InvalidStatus.selector);
+        vm.expectRevert(ICaliberMarket.InvalidStatus.selector);
         market.finalizeRedeem(orderId);
     }
 
@@ -416,23 +568,23 @@ contract CaliberMarketTest is Test {
         vm.prank(user);
         ammoToken.approve(address(market), 100e18);
         vm.prank(user);
-        uint256 orderId = market.requestExit(100e18, uint64(block.timestamp + 1 days));
+        uint256 orderId = market.requestExit(100e18, _deadline());
 
         uint256 grossUsdc = (100e18 * ORACLE_PRICE) / (1e12 * 1e18);
         uint256 payout = (grossUsdc * 9_500) / 10_000;
 
         assertEq(ammoToken.balanceOf(address(market)), 100e18);
-        (address orderUser,, uint256 requestPrice, uint256 payoutUsdc,,,, CaliberMarket.OrderStatus status) =
+        (address orderUser,, uint256 requestPrice, uint256 payoutUsdc,,, ICaliberMarket.OrderStatus status) =
             market.exitOrders(orderId);
         assertEq(orderUser, user);
         assertEq(requestPrice, ORACLE_PRICE);
         assertEq(payoutUsdc, payout);
-        assertEq(uint256(status), uint256(CaliberMarket.OrderStatus.Requested));
+        assertEq(uint256(status), uint256(ICaliberMarket.OrderStatus.Requested));
     }
 
     function testFinalizeExitPullsUsdcFromKeeperToUser() public {
         _mintTokensToUser(user);
-        uint256 orderId = _requestExit(user, 100e18, 0);
+        uint256 orderId = _requestExit(user, 100e18, _deadline());
         uint256 payout = _exitPayout(100e18, ORACLE_PRICE);
 
         uint256 userUsdcBefore = usdc.balanceOf(user);
@@ -448,7 +600,7 @@ contract CaliberMarketTest is Test {
 
     function testFinalizeExitRevertsWhenKeeperHasInsufficientUsdc() public {
         _mintTokensToUser(user);
-        uint256 orderId = _requestExit(user, 100e18, 0);
+        uint256 orderId = _requestExit(user, 100e18, _deadline());
 
         // Drain keeper to a stranger before finalize
         uint256 keeperBalance = usdc.balanceOf(keeper);
@@ -456,7 +608,7 @@ contract CaliberMarketTest is Test {
         usdc.transfer(address(0xDEAD), keeperBalance);
 
         vm.prank(keeper);
-        vm.expectRevert(CaliberMarket.InvalidAmount.selector);
+        vm.expectRevert();
         market.finalizeExit(orderId);
     }
 
@@ -467,17 +619,17 @@ contract CaliberMarketTest is Test {
         usdc.mint(fresh, 1_000_000e6);
 
         _mintTokensToUser(user);
-        uint256 orderId = _requestExit(user, 100e18, 0);
+        uint256 orderId = _requestExit(user, 100e18, _deadline());
 
         vm.prank(fresh);
-        vm.expectRevert(CaliberMarket.InvalidAmount.selector);
+        vm.expectRevert();
         market.finalizeExit(orderId);
     }
 
     function testCancelExitUnlocksTokens() public {
         _mintTokensToUser(user);
         uint256 balBefore = ammoToken.balanceOf(user);
-        uint256 orderId = _requestExit(user, 100e18, 0);
+        uint256 orderId = _requestExit(user, 100e18, _deadline());
 
         vm.prank(keeper);
         market.cancelExit(orderId, 1);
@@ -489,7 +641,7 @@ contract CaliberMarketTest is Test {
     function testUserCanCancelExitAfterDeadline() public {
         _mintTokensToUser(user);
         uint256 balBefore = ammoToken.balanceOf(user);
-        uint64 deadline = uint64(block.timestamp + 60);
+        uint64 deadline = _deadline();
         uint256 orderId = _requestExit(user, 100e18, deadline);
 
         vm.warp(deadline + 1);
@@ -500,12 +652,27 @@ contract CaliberMarketTest is Test {
         assertEq(ammoToken.balanceOf(user), balBefore);
     }
 
-    function testFinalizeExitOnlyKeeper() public {
+    function testRequestExitRequiresDeadlineGreaterThanMinimum() public {
         _mintTokensToUser(user);
-        uint256 orderId = _requestExit(user, 100e18, 0);
 
         vm.prank(user);
-        vm.expectRevert(CaliberMarket.NotKeeper.selector);
+        ammoToken.approve(address(market), 100e18);
+
+        vm.prank(user);
+        vm.expectRevert(ICaliberMarket.DeadlineTooShort.selector);
+        market.requestExit(100e18, 0);
+
+        vm.prank(user);
+        vm.expectRevert(ICaliberMarket.DeadlineTooShort.selector);
+        market.requestExit(100e18, uint64(block.timestamp + MIN_MINT_DEADLINE));
+    }
+
+    function testFinalizeExitOnlyKeeper() public {
+        _mintTokensToUser(user);
+        uint256 orderId = _requestExit(user, 100e18, _deadline());
+
+        vm.prank(user);
+        vm.expectRevert(ICaliberMarket.NotKeeper.selector);
         market.finalizeExit(orderId);
     }
 
@@ -524,18 +691,18 @@ contract CaliberMarketTest is Test {
         vm.prank(user);
         usdc.approve(address(market), 100e6);
         vm.prank(user);
-        vm.expectRevert(CaliberMarket.MarketPaused.selector);
-        market.startMint(100e6, 0);
+        vm.expectRevert(ICaliberMarket.MarketPaused.selector);
+        market.startMint(100e6, _deadline());
 
         vm.prank(user);
         ammoToken.approve(address(market), 100e18);
         vm.prank(user);
-        vm.expectRevert(CaliberMarket.MarketPaused.selector);
-        market.startRedeem(100e18, 0);
+        vm.expectRevert(ICaliberMarket.MarketPaused.selector);
+        market.startRedeem(100e18, _deadline());
 
         vm.prank(user);
-        vm.expectRevert(CaliberMarket.MarketPaused.selector);
-        market.requestExit(100e18, 0);
+        vm.expectRevert(ICaliberMarket.MarketPaused.selector);
+        market.requestExit(100e18, _deadline());
     }
 
     function testSetMinMint() public {
@@ -547,14 +714,14 @@ contract CaliberMarketTest is Test {
         vm.prank(user);
         usdc.approve(address(market), 100e6);
         vm.prank(user);
-        market.startMint(100e6, 0);
+        market.startMint(100e6, _deadline());
 
         _mintTokensToUser(user);
 
         vm.startPrank(user);
         ammoToken.approve(address(market), 200e18);
-        market.startRedeem(100e18, 0);
-        market.requestExit(100e18, 0);
+        market.startRedeem(100e18, _deadline());
+        market.requestExit(100e18, _deadline());
         vm.stopPrank();
 
         assertEq(market.nextMintOrderId(), 3);
@@ -568,12 +735,18 @@ contract CaliberMarketTest is Test {
 
     // ── Helpers ─────────────────────────────────────
 
+    function _deadline() internal view returns (uint64) {
+        return uint64(block.timestamp + MIN_MINT_DEADLINE + 1);
+    }
+
     function _mintTokensToUser(address who) internal {
         usdc.mint(who, 100e6);
         vm.prank(who);
         usdc.approve(address(market), 100e6);
         vm.prank(who);
-        uint256 orderId = market.startMint(100e6, 0);
+        uint256 orderId = market.startMint(100e6, _deadline());
+        vm.prank(keeper);
+        market.processMint(orderId);
         vm.prank(keeper);
         market.finalizeMint(orderId);
     }
@@ -598,12 +771,11 @@ contract CaliberMarketTest is Test {
         uint256 minMintRounds
     ) internal returns (CaliberMarket) {
         return new CaliberMarket(
-            CaliberMarket.MarketConfig({
+            ICaliberMarket.MarketConfig({
                 manager: address(manager_),
                 usdc: address(usdc),
                 usdcDecimals: 6,
                 oracle: address(oracle_),
-                emissionController: address(emissionController),
                 caliberId: CALIBER_9MM,
                 tokenName: name,
                 tokenSymbol: symbol,

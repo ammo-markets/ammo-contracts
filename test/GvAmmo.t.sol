@@ -5,13 +5,14 @@ import "forge-std/Test.sol";
 import "../src/AmmoManager.sol";
 import "../src/CaliberToken.sol";
 import "../src/CaliberMarket.sol";
+import "../src/interfaces/ICaliberMarket.sol";
 import "../src/external/gvToken/GvToken.sol";
 import "./MockERC20.sol";
-import "./MockEmissionController.sol";
 import "./MockPriceOracle.sol";
 
 contract GvAmmoTest is Test {
     uint256 constant ORACLE_PRICE = 1e18;
+    uint64 constant MIN_MINT_DEADLINE = 24 hours;
     bytes32 constant CALIBER_9MM = bytes32("9MM");
 
     AmmoManager manager;
@@ -20,7 +21,6 @@ contract GvAmmoTest is Test {
     GvToken gvAmmo;
     MockERC20 usdc;
     MockPriceOracle oracle;
-    MockEmissionController emissionController;
 
     address user = address(0xA11CE);
     address treasury = address(0x73EA5);
@@ -36,18 +36,16 @@ contract GvAmmoTest is Test {
 
         usdc = new MockERC20("USD Coin", "USDC", 6);
         oracle = new MockPriceOracle(ORACLE_PRICE);
-        emissionController = new MockEmissionController(address(new MockERC20("Protocol", "AMMO", 18)));
 
         manager = new AmmoManager(feeRecipient, wavax);
         manager.setTreasury(treasury);
 
         market = new CaliberMarket(
-            CaliberMarket.MarketConfig({
+            ICaliberMarket.MarketConfig({
                 manager: address(manager),
                 usdc: address(usdc),
                 usdcDecimals: 6,
                 oracle: address(oracle),
-                emissionController: address(emissionController),
                 caliberId: CALIBER_9MM,
                 tokenName: "Ammo 9MM",
                 tokenSymbol: "MO9MM",
@@ -148,7 +146,12 @@ contract GvAmmoTest is Test {
         vm.prank(account);
         usdc.approve(address(market), usdcAmount);
         vm.prank(account);
-        uint256 orderId = market.startMint(usdcAmount, 0);
+        uint256 orderId = market.startMint(usdcAmount, _deadline());
+        market.processMint(orderId);
         market.finalizeMint(orderId);
+    }
+
+    function _deadline() internal view returns (uint64) {
+        return uint64(block.timestamp + MIN_MINT_DEADLINE + 1);
     }
 }

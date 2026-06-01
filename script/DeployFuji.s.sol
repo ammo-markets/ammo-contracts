@@ -6,8 +6,6 @@ import "../src/MockUSDC.sol";
 import "../src/PriceOracle.sol";
 import "../src/AmmoManager.sol";
 import "../src/AmmoFactory.sol";
-import "../src/ProtocolEmissionController.sol";
-import "../src/ProtocolToken.sol";
 
 /// @notice Single deploy script for the full Ammo Exchange protocol on Fuji testnet.
 /// @dev Deploys MockUSDC, AmmoManager (with roles), PriceOracle, AmmoFactory,
@@ -20,14 +18,9 @@ contract DeployFuji is Script {
 
     MockUSDC public usdc;
     AmmoManager public manager;
-    ProtocolToken public protocolToken;
-    ProtocolEmissionController public emissionController;
     PriceOracle public oracle;
     AmmoFactory public factory;
 
-    uint256 constant FARM_CAP = 365_000_000e18;
-    uint256 constant TREASURY_CAP = (FARM_CAP * 40) / 60;
-    uint256 constant TREASURY_VOLUME_TARGET = 10_000_000e6;
     uint256 constant INITIAL_DAILY_MINT_CAP = 50_000e6;
 
     struct CaliberDeployment {
@@ -55,22 +48,14 @@ contract DeployFuji is Script {
         // 4. Deploy AmmoFactory with oracle
         factory = new AmmoFactory(address(manager), address(usdc), 6, address(oracle));
 
-        // 5. Deploy protocol emission stack and lock the mint path
-        protocolToken = new ProtocolToken("Ammo Protocol", "AMMO", address(manager));
-        emissionController = new ProtocolEmissionController(
-            address(manager), address(factory), address(protocolToken), FARM_CAP, TREASURY_CAP, TREASURY_VOLUME_TARGET
-        );
-        protocolToken.setMinterOnce(address(emissionController));
-        factory.setEmissionControllerOnce(address(emissionController));
-
-        // 6. Set oracle factory (enables auto-registration of markets)
+        // 5. Set oracle factory (enables auto-registration of markets)
         oracle.setFactory(address(factory));
 
-        // 7. Create launch FMJ calibers (factory auto-registers each with oracle)
+        // 6. Create launch FMJ calibers (factory auto-registers each with oracle)
         _deploy9mmPractice();
         _deploy556NatoPractice();
 
-        // 8. Set initial prices via batch update
+        // 7. Set initial prices via batch update
         _setInitialPrices();
 
         vm.stopBroadcast();
@@ -109,8 +94,6 @@ contract DeployFuji is Script {
         console.log("=== Deployed Addresses ===");
         console.log("MockUSDC:", address(usdc));
         console.log("AmmoManager:", address(manager));
-        console.log("ProtocolToken:", address(protocolToken));
-        console.log("ProtocolEmissionController:", address(emissionController));
         console.log("PriceOracle:", address(oracle));
         console.log("AmmoFactory:", address(factory));
         console.log("WAVAX:", FUJI_WAVAX);

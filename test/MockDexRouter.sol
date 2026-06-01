@@ -2,7 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {IDexRouter} from "../src/interfaces/IDexRouter.sol";
-import {IERC20} from "../src/interfaces/IERC20.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /// @notice Mock Solidly-style router that doubles as factory and pair for tests.
 /// @dev Production wires _sellTaxes through router.factory() -> getPair() -> pair.current().

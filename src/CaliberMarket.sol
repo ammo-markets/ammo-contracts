@@ -4,109 +4,14 @@ pragma solidity ^0.8.24;
 import "./CaliberToken.sol";
 import "./AmmoManager.sol";
 import "./IPriceOracle.sol";
-import {IProtocolEmissionController} from "./interfaces/IProtocolEmissionController.sol";
-import {IERC20} from "./interfaces/IERC20.sol";
+import "./interfaces/ICaliberMarket.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-/// @notice Per-caliber market with 2-step mint, real-world redeem, and USDC exit flows.
+/// @notice Per-caliber market with 3-step mint, real-world redeem, and USDC exit flows.
 /// @dev Deployed by AmmoFactory. Each instance manages exactly one caliber.
-contract CaliberMarket {
-    enum OrderStatus {
-        None,
-        Requested,
-        Finalized,
-        Canceled
-    }
-
-    struct MarketConfig {
-        address manager;
-        address usdc;
-        uint8 usdcDecimals;
-        address oracle;
-        address emissionController;
-        bytes32 caliberId;
-        string tokenName;
-        string tokenSymbol;
-        uint256 minMintRounds;
-    }
-
-    struct MintOrder {
-        address user;
-        uint256 usdcAmount;
-        uint256 requestPrice;
-        uint256 minMintAtStart;
-        uint64 deadline;
-        uint64 createdAt;
-        uint64 finalizedAt;
-        OrderStatus status;
-    }
-
-    struct RedeemOrder {
-        address user;
-        uint256 tokenAmount;
-        uint64 deadline;
-        uint64 createdAt;
-        uint64 finalizedAt;
-        OrderStatus status;
-    }
-
-    struct ExitOrder {
-        address user;
-        uint256 tokenAmount;
-        uint256 requestPrice;
-        uint256 payoutUsdc;
-        uint64 deadline;
-        uint64 createdAt;
-        uint64 finalizedAt;
-        OrderStatus status;
-    }
-
-    error NotOwner();
-    error NotKeeper();
-    error InvalidUser();
-    error MarketPaused();
-    error ZeroAddress();
-    error InvalidAmount();
-    error InvalidPrice();
-    error MinMintNotMet();
-    error StalePrice();
-    error DeadlineExpired();
-    error DeadlineNotExpired();
-    error DeadlineTooShort();
-    error DeadlineNotSet();
-    error InvalidStatus();
-    error Reentrancy();
-    error TreasuryNotSet();
-    error DailyMintCapExceeded();
-
-    event MintRequested(
-        uint256 indexed orderId, address indexed user, uint256 usdcAmount, uint256 requestPrice, uint64 deadline
-    );
-    event MintFinalized(
-        uint256 indexed orderId,
-        address indexed user,
-        uint256 usdcAmount,
-        uint256 tokenAmount,
-        uint256 priceUsed,
-        uint256 refundAmount
-    );
-    event MintCanceled(uint256 indexed orderId, address indexed user, uint256 refundAmount, uint8 reasonCode);
-    event RedeemRequested(uint256 indexed orderId, address indexed user, uint256 tokenAmount, uint64 deadline);
-    event RedeemFinalized(uint256 indexed orderId, address indexed user, uint256 burnedTokens);
-    event RedeemCanceled(uint256 indexed orderId, address indexed user, uint256 unlockedTokens, uint8 reasonCode);
-    event ExitRequested(
-        uint256 indexed orderId,
-        address indexed user,
-        uint256 tokenAmount,
-        uint256 requestPrice,
-        uint256 payoutUsdc,
-        uint64 deadline
-    );
-    event ExitFinalized(uint256 indexed orderId, address indexed user, uint256 burnedTokens, uint256 payoutUsdc);
-    event ExitCanceled(uint256 indexed orderId, address indexed user, uint256 unlockedTokens, uint8 reasonCode);
-    event MinMintUpdated(uint256 oldMin, uint256 newMin);
-    event DailyMintUsed(uint256 indexed day, uint256 usdcAmount, uint256 usedUsdc, uint256 capUsdc);
-    event Paused(address indexed by);
-    event Unpaused(address indexed by);
+contract CaliberMarket is ICaliberMarket {
+    using SafeERC20 for IERC20;
 
     uint256 public constant MAX_STALENESS = 6 hours;
     uint256 public constant MIN_MINT_DEADLINE = 24 hours;
@@ -116,7 +21,6 @@ contract CaliberMarket {
     IERC20 public immutable usdc;
     uint8 public immutable usdcDecimals;
     IPriceOracle public immutable oracle;
-    IProtocolEmissionController public immutable emissionController;
     CaliberToken public immutable token;
     bytes32 public immutable caliberId;
 
@@ -156,10 +60,7 @@ contract CaliberMarket {
     }
 
     constructor(MarketConfig memory config) {
-        if (
-            config.manager == address(0) || config.usdc == address(0) || config.oracle == address(0)
-                || config.emissionController == address(0)
-        ) {
+        if (config.manager == address(0) || config.usdc == address(0) || config.oracle == address(0)) {
             revert ZeroAddress();
         }
         if (config.usdcDecimals > 18) revert InvalidAmount();
@@ -168,7 +69,6 @@ contract CaliberMarket {
         usdc = IERC20(config.usdc);
         usdcDecimals = config.usdcDecimals;
         oracle = IPriceOracle(config.oracle);
-        emissionController = IProtocolEmissionController(config.emissionController);
         caliberId = config.caliberId;
         minMintRounds = config.minMintRounds;
 
@@ -184,69 +84,82 @@ contract CaliberMarket {
         returns (uint256 orderId)
     {
         if (usdcAmount == 0) revert InvalidAmount();
-        if (deadline != 0 && deadline < block.timestamp + MIN_MINT_DEADLINE) revert DeadlineTooShort();
+        _requireMinimumDeadline(deadline);
 
         (uint256 price,) = _freshPrice();
         uint256 tokenAmount = _tokensForUsdc(usdcAmount, price);
         if (tokenAmount < minMintRounds * 1e18) revert MinMintNotMet();
 
         _consumeDailyMintCapacity(usdcAmount);
-        _safeTransferFrom(usdc, msg.sender, address(this), usdcAmount);
+        usdc.safeTransferFrom(msg.sender, address(this), usdcAmount);
 
         orderId = nextMintOrderId++;
         mintOrders[orderId] = MintOrder({
             user: msg.sender,
             usdcAmount: usdcAmount,
             requestPrice: price,
-            minMintAtStart: minMintRounds,
             deadline: deadline,
             createdAt: uint64(block.timestamp),
-            finalizedAt: 0,
             status: OrderStatus.Requested
         });
 
         emit MintRequested(orderId, msg.sender, usdcAmount, price, deadline);
     }
 
-    function finalizeMint(uint256 orderId) external onlyKeeper whenNotPaused nonReentrant {
+    /// @notice Sweep a requested order's USDC to the treasury so the team has working capital
+    ///         to buy the physical ammo before the mint is finalized.
+    /// @dev Requested → Processing. The full user deposit is swept to treasury, so finalizeMint
+    ///      never has to move USDC. Once an order is Processing it is committed: it can no longer
+    ///      be canceled by anyone (see cancelMint).
+    function processMint(uint256 orderId) external onlyKeeper whenNotPaused nonReentrant {
         MintOrder storage order = mintOrders[orderId];
         if (order.status != OrderStatus.Requested) revert InvalidStatus();
-        if (order.deadline != 0 && block.timestamp > order.deadline) revert DeadlineExpired();
+        if (block.timestamp > order.deadline) revert DeadlineExpired();
 
         address treasury = manager.treasury();
         if (treasury == address(0)) revert TreasuryNotSet();
 
-        uint256 tokenAmount = _tokensForUsdc(order.usdcAmount, order.requestPrice);
-        if (tokenAmount < order.minMintAtStart * 1e18) revert MinMintNotMet();
+        order.status = OrderStatus.Processing;
 
-        uint256 actualUsdc = _usdcForTokens(tokenAmount, order.requestPrice);
-        uint256 refund = order.usdcAmount - actualUsdc;
+        usdc.safeTransfer(treasury, order.usdcAmount);
 
-        order.status = OrderStatus.Finalized;
-        order.finalizedAt = uint64(block.timestamp);
-
-        _safeTransfer(usdc, treasury, actualUsdc);
-        if (refund > 0) {
-            _safeTransfer(usdc, order.user, refund);
-        }
-
-        token.mint(order.user, tokenAmount);
-        emissionController.recordCaliberMint(actualUsdc);
-
-        emit MintFinalized(orderId, order.user, order.usdcAmount, tokenAmount, order.requestPrice, refund);
+        emit MintProcessing(orderId, order.user, order.usdcAmount, 0);
     }
 
+    /// @notice Confirm an order is backed by real ammo and mint the caliber tokens.
+    /// @dev Processing → Finalized. Funds already left for the treasury in processMint, so this
+    ///      only mints tokens. No deadline check: once funds are committed
+    ///      the order must be either finalized or keeper-canceled, never left to expire.
+    function finalizeMint(uint256 orderId) external onlyKeeper whenNotPaused nonReentrant {
+        MintOrder storage order = mintOrders[orderId];
+        if (order.status != OrderStatus.Processing) revert InvalidStatus();
+
+        uint256 tokenAmount = _tokensForUsdc(order.usdcAmount, order.requestPrice);
+        order.status = OrderStatus.Finalized;
+
+        token.mint(order.user, tokenAmount);
+
+        emit MintFinalized(orderId, order.user, order.usdcAmount, tokenAmount, order.requestPrice, 0);
+    }
+
+    /// @notice Cancel a mint, refunding escrow before processing or caller-funded USDC after processing.
+    /// @dev Requested orders refund from this contract's escrow: a keeper may cancel before deadline,
+    ///      while anyone may cancel after deadline. Processing orders are open to cancel because
+    ///      the caller funds the refund directly via transferFrom(msg.sender, order.user, amount).
     function cancelMint(uint256 orderId, uint8 reasonCode) external nonReentrant {
         MintOrder storage order = mintOrders[orderId];
-        if (order.status != OrderStatus.Requested) revert InvalidStatus();
-        _requireKeeperOrExpiredOrder(order.user, order.deadline);
-
-        _releaseDailyMintCapacity(order.usdcAmount, order.createdAt);
-
-        order.status = OrderStatus.Canceled;
-        order.finalizedAt = uint64(block.timestamp);
-
-        _safeTransfer(usdc, order.user, order.usdcAmount);
+        OrderStatus status = order.status;
+        if (status == OrderStatus.Requested) {
+            if (block.timestamp <= order.deadline && !manager.isKeeper(msg.sender)) revert NotKeeper();
+            _releaseDailyMintCapacity(order.usdcAmount, order.createdAt);
+            order.status = OrderStatus.Canceled;
+            usdc.safeTransfer(order.user, order.usdcAmount);
+        } else if (status == OrderStatus.Processing) {
+            order.status = OrderStatus.Canceled;
+            usdc.safeTransferFrom(msg.sender, order.user, order.usdcAmount);
+        } else {
+            revert InvalidStatus();
+        }
         emit MintCanceled(orderId, order.user, order.usdcAmount, reasonCode);
     }
 
@@ -259,6 +172,7 @@ contract CaliberMarket {
         returns (uint256 orderId)
     {
         if (tokenAmount == 0) revert InvalidAmount();
+        _requireMinimumDeadline(deadline);
         token.transferFrom(msg.sender, address(this), tokenAmount);
 
         orderId = nextRedeemOrderId++;
@@ -267,7 +181,6 @@ contract CaliberMarket {
             tokenAmount: tokenAmount,
             deadline: deadline,
             createdAt: uint64(block.timestamp),
-            finalizedAt: 0,
             status: OrderStatus.Requested
         });
 
@@ -277,10 +190,9 @@ contract CaliberMarket {
     function finalizeRedeem(uint256 orderId) external onlyKeeper whenNotPaused nonReentrant {
         RedeemOrder storage order = redeemOrders[orderId];
         if (order.status != OrderStatus.Requested) revert InvalidStatus();
-        if (order.deadline != 0 && block.timestamp > order.deadline) revert DeadlineExpired();
+        if (block.timestamp > order.deadline) revert DeadlineExpired();
 
         order.status = OrderStatus.Finalized;
-        order.finalizedAt = uint64(block.timestamp);
 
         token.burn(address(this), order.tokenAmount);
 
@@ -293,7 +205,6 @@ contract CaliberMarket {
         _requireKeeperOrExpiredOrder(order.user, order.deadline);
 
         order.status = OrderStatus.Canceled;
-        order.finalizedAt = uint64(block.timestamp);
 
         token.transfer(order.user, order.tokenAmount);
         emit RedeemCanceled(orderId, order.user, order.tokenAmount, reasonCode);
@@ -308,6 +219,7 @@ contract CaliberMarket {
         returns (uint256 orderId)
     {
         if (tokenAmount == 0) revert InvalidAmount();
+        _requireMinimumDeadline(deadline);
 
         (uint256 price,) = _freshPrice();
         uint256 payoutUsdc = _exitQuote(tokenAmount, price);
@@ -322,7 +234,6 @@ contract CaliberMarket {
             payoutUsdc: payoutUsdc,
             deadline: deadline,
             createdAt: uint64(block.timestamp),
-            finalizedAt: 0,
             status: OrderStatus.Requested
         });
 
@@ -332,12 +243,11 @@ contract CaliberMarket {
     function finalizeExit(uint256 orderId) external onlyKeeper whenNotPaused nonReentrant {
         ExitOrder storage order = exitOrders[orderId];
         if (order.status != OrderStatus.Requested) revert InvalidStatus();
-        if (order.deadline != 0 && block.timestamp > order.deadline) revert DeadlineExpired();
+        if (block.timestamp > order.deadline) revert DeadlineExpired();
 
         order.status = OrderStatus.Finalized;
-        order.finalizedAt = uint64(block.timestamp);
 
-        _safeTransferFrom(usdc, msg.sender, order.user, order.payoutUsdc);
+        usdc.safeTransferFrom(msg.sender, order.user, order.payoutUsdc);
         token.burn(address(this), order.tokenAmount);
 
         emit ExitFinalized(orderId, order.user, order.tokenAmount, order.payoutUsdc);
@@ -349,7 +259,6 @@ contract CaliberMarket {
         _requireKeeperOrExpiredOrder(order.user, order.deadline);
 
         order.status = OrderStatus.Canceled;
-        order.finalizedAt = uint64(block.timestamp);
 
         token.transfer(order.user, order.tokenAmount);
         emit ExitCanceled(orderId, order.user, order.tokenAmount, reasonCode);
@@ -419,10 +328,13 @@ contract CaliberMarket {
         dailyMintUsedUsdc = usdcAmount >= used ? 0 : used - usdcAmount;
     }
 
+    function _requireMinimumDeadline(uint64 deadline) internal view {
+        if (deadline <= block.timestamp + MIN_MINT_DEADLINE) revert DeadlineTooShort();
+    }
+
     function _requireKeeperOrExpiredOrder(address user, uint64 deadline) internal view {
         if (!manager.isKeeper(msg.sender)) {
             if (msg.sender != user) revert InvalidUser();
-            if (deadline == 0) revert DeadlineNotSet();
             if (block.timestamp <= deadline) revert DeadlineNotExpired();
         }
     }
@@ -433,17 +345,5 @@ contract CaliberMarket {
 
     function _checkKeeper() internal view {
         if (!manager.isKeeper(msg.sender)) revert NotKeeper();
-    }
-
-    function _safeTransfer(IERC20 tok, address to, uint256 amount) internal {
-        (bool success, bytes memory data) =
-            address(tok).call(abi.encodeWithSelector(IERC20.transfer.selector, to, amount));
-        if (!success || (data.length != 0 && !abi.decode(data, (bool)))) revert InvalidAmount();
-    }
-
-    function _safeTransferFrom(IERC20 tok, address from, address to, uint256 amount) internal {
-        (bool success, bytes memory data) =
-            address(tok).call(abi.encodeWithSelector(IERC20.transferFrom.selector, from, to, amount));
-        if (!success || (data.length != 0 && !abi.decode(data, (bool)))) revert InvalidAmount();
     }
 }

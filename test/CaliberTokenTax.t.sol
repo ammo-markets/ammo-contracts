@@ -6,10 +6,10 @@ import "../src/AmmoManager.sol";
 import "../src/CaliberToken.sol";
 import "../src/AmmoLiquidityManager.sol";
 import "../src/CaliberMarket.sol";
+import "../src/interfaces/ICaliberMarket.sol";
 import "./MockDexRouter.sol";
 import "./MockPriceOracle.sol";
 import "./MockERC20.sol";
-import "./MockEmissionController.sol";
 
 contract MockGvAmmo {
     mapping(address => uint256) internal balances;
@@ -42,7 +42,6 @@ contract CaliberTokenTaxTest is Test {
     AmmoLiquidityManager liquidityManager;
     MockERC20 usdc;
     MockPriceOracle oracle;
-    MockEmissionController emissionController;
     MockGvAmmo gvAmmo;
 
     address owner = address(this);
@@ -55,6 +54,7 @@ contract CaliberTokenTaxTest is Test {
 
     bytes32 constant CALIBER_9MM = bytes32("9MM");
     uint256 constant ORACLE_PRICE = 21e16; // $0.21 per round
+    uint64 constant MIN_MINT_DEADLINE = 24 hours;
     uint256 constant BUY_TAX = 300; // 3%
     uint256 constant SELL_TAX = 300; // 3%
 
@@ -63,7 +63,6 @@ contract CaliberTokenTaxTest is Test {
         oracle = new MockPriceOracle(ORACLE_PRICE);
         router = new MockDexRouter(wavax);
         liquidityManager = new AmmoLiquidityManager(address(router));
-        emissionController = new MockEmissionController(address(new MockERC20("Protocol", "AMMO", 18)));
         gvAmmo = new MockGvAmmo();
 
         manager = new AmmoManager(feeRecipient, wavax);
@@ -71,12 +70,11 @@ contract CaliberTokenTaxTest is Test {
         manager.setTaxExempt(address(liquidityManager), true);
 
         market = new CaliberMarket(
-            CaliberMarket.MarketConfig({
+            ICaliberMarket.MarketConfig({
                 manager: address(manager),
                 usdc: address(usdc),
                 usdcDecimals: 6,
                 oracle: address(oracle),
-                emissionController: address(emissionController),
                 caliberId: CALIBER_9MM,
                 tokenName: "Ammo 9MM",
                 tokenSymbol: "MO9MM",
@@ -235,7 +233,7 @@ contract CaliberTokenTaxTest is Test {
         uint256 treasuryBefore = token.balanceOf(treasury);
 
         vm.prank(user);
-        market.startRedeem(redeemAmount, 0);
+        market.startRedeem(redeemAmount, _deadline());
 
         assertEq(token.balanceOf(treasury), treasuryBefore);
         assertEq(token.balanceOf(address(market)), redeemAmount);
@@ -528,7 +526,12 @@ contract CaliberTokenTaxTest is Test {
         vm.prank(who);
         usdc.approve(address(market), usdcAmount);
         vm.prank(who);
-        uint256 orderId = market.startMint(usdcAmount, 0);
+        uint256 orderId = market.startMint(usdcAmount, _deadline());
+        market.processMint(orderId);
         market.finalizeMint(orderId);
+    }
+
+    function _deadline() internal view returns (uint64) {
+        return uint64(block.timestamp + MIN_MINT_DEADLINE + 1);
     }
 }

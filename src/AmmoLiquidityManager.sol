@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {IERC20} from "./interfaces/IERC20.sol";
 import {IDexRouter} from "./interfaces/IDexRouter.sol";
 import {IWETH} from "./interfaces/IWETH.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /// @notice Tax-exempt helper for adding and removing CaliberToken liquidity through the configured DEX router.
 /// @dev Mark this contract tax-exempt in AmmoManager before use. Direct router LP adds/removes remain taxable.
 contract AmmoLiquidityManager {
+    using SafeERC20 for IERC20;
+
     IDexRouter public immutable router;
     address public immutable wavax;
 
@@ -38,14 +41,14 @@ contract AmmoLiquidityManager {
         if (amountTokenDesired == 0 || msg.value == 0) revert InvalidAmount();
 
         uint256 ethBefore = address(this).balance - msg.value;
-        _safeTransferFrom(IERC20(token), msg.sender, address(this), amountTokenDesired);
-        _forceApprove(IERC20(token), address(router), amountTokenDesired);
+        IERC20(token).safeTransferFrom(msg.sender, address(this), amountTokenDesired);
+        IERC20(token).forceApprove(address(router), amountTokenDesired);
 
         (amountToken, amountETH, liquidity) = router.addLiquidityETH{value: msg.value}(
             token, stable, amountTokenDesired, amountTokenMin, amountETHMin, to, deadline
         );
 
-        _forceApprove(IERC20(token), address(router), 0);
+        IERC20(token).forceApprove(address(router), 0);
         _refundToken(IERC20(token), msg.sender, amountTokenDesired - amountToken);
         _refundETH(msg.sender, address(this).balance - ethBefore);
     }
@@ -67,17 +70,17 @@ contract AmmoLiquidityManager {
         IERC20 erc20A = IERC20(tokenA);
         IERC20 erc20B = IERC20(tokenB);
 
-        _safeTransferFrom(erc20A, msg.sender, address(this), amountADesired);
-        _safeTransferFrom(erc20B, msg.sender, address(this), amountBDesired);
-        _forceApprove(erc20A, address(router), amountADesired);
-        _forceApprove(erc20B, address(router), amountBDesired);
+        erc20A.safeTransferFrom(msg.sender, address(this), amountADesired);
+        erc20B.safeTransferFrom(msg.sender, address(this), amountBDesired);
+        erc20A.forceApprove(address(router), amountADesired);
+        erc20B.forceApprove(address(router), amountBDesired);
 
         (amountA, amountB, liquidity) = router.addLiquidity(
             tokenA, tokenB, stable, amountADesired, amountBDesired, amountAMin, amountBMin, to, deadline
         );
 
-        _forceApprove(erc20A, address(router), 0);
-        _forceApprove(erc20B, address(router), 0);
+        erc20A.forceApprove(address(router), 0);
+        erc20B.forceApprove(address(router), 0);
         _refundToken(erc20A, msg.sender, amountADesired - amountA);
         _refundToken(erc20B, msg.sender, amountBDesired - amountB);
     }
@@ -112,8 +115,8 @@ contract AmmoLiquidityManager {
         IERC20 lp = IERC20(pair);
 
         // Pull LP tokens from caller into this exempt helper.
-        _safeTransferFrom(lp, msg.sender, address(this), liquidity);
-        _forceApprove(lp, address(router), liquidity);
+        lp.safeTransferFrom(msg.sender, address(this), liquidity);
+        lp.forceApprove(address(router), liquidity);
 
         // Burn LP via the router. `to = address(this)` makes the pair send AMMO +
         // WAVAX directly to this exempt helper — the pair→helper transfer for AMMO
@@ -124,7 +127,7 @@ contract AmmoLiquidityManager {
             token, wavax, stable, liquidity, amountTokenMin, amountETHMin, address(this), deadline
         );
 
-        _forceApprove(lp, address(router), 0);
+        lp.forceApprove(address(router), 0);
 
         // Unwrap WAVAX → native AVAX. IWETH.withdraw sends native to msg.sender,
         // which is this contract — caught by the receive() fallback.
@@ -132,35 +135,17 @@ contract AmmoLiquidityManager {
 
         // Forward both legs to `to`. helper→to for AMMO is untaxed (helper
         // exempt; `to` is not a pool); native AVAX is forwarded via low-level call.
-        _safeTransfer(IERC20(token), to, amountToken);
+        IERC20(token).safeTransfer(to, amountToken);
         _refundETH(to, amountETH);
     }
 
     function _refundToken(IERC20 token, address to, uint256 amount) internal {
-        if (amount > 0) _safeTransfer(token, to, amount);
+        if (amount > 0) token.safeTransfer(to, amount);
     }
 
     function _refundETH(address to, uint256 amount) internal {
         if (amount == 0) return;
         (bool success,) = to.call{value: amount}("");
         if (!success) revert TransferFailed();
-    }
-
-    function _forceApprove(IERC20 token, address spender, uint256 amount) internal {
-        (bool success, bytes memory data) =
-            address(token).call(abi.encodeWithSelector(IERC20.approve.selector, spender, amount));
-        if (!success || (data.length != 0 && !abi.decode(data, (bool)))) revert TransferFailed();
-    }
-
-    function _safeTransfer(IERC20 token, address to, uint256 amount) internal {
-        (bool success, bytes memory data) =
-            address(token).call(abi.encodeWithSelector(IERC20.transfer.selector, to, amount));
-        if (!success || (data.length != 0 && !abi.decode(data, (bool)))) revert TransferFailed();
-    }
-
-    function _safeTransferFrom(IERC20 token, address from, address to, uint256 amount) internal {
-        (bool success, bytes memory data) =
-            address(token).call(abi.encodeWithSelector(IERC20.transferFrom.selector, from, to, amount));
-        if (!success || (data.length != 0 && !abi.decode(data, (bool)))) revert TransferFailed();
     }
 }

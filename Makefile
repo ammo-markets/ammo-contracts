@@ -19,6 +19,40 @@ fuji_deploy:
 		--verifier-url "https://api.avascan.info/v2/network/testnet/evm/43113/etherscan" \
 		--etherscan-api-key $(SNOWTRACE_API_KEY) -vv
 
+# ── Fuji exchange dev stack ──────────────────────
+
+fuji_exchange_check:
+	@cd $(CONTRACTS_DIR) && forge clean
+	@cd $(CONTRACTS_DIR) && forge script script/DeployFujiExchange.s.sol:DeployFujiExchange \
+		--rpc-url $(FUJI_RPC_URL) \
+		--private-key $(PRIVATE_KEY) -vv
+
+fuji_exchange_deploy:
+	@cd $(CONTRACTS_DIR) && forge clean
+	@cd $(CONTRACTS_DIR) && forge script script/DeployFujiExchange.s.sol:DeployFujiExchange \
+		--rpc-url $(FUJI_RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		--broadcast --verify --slow \
+		--verifier-url "https://api.avascan.info/v2/network/testnet/evm/43113/etherscan" \
+		--etherscan-api-key $(SNOWTRACE_API_KEY) -vv
+
+# ── Fuji full dev stack: exchange + Ammo + seeded pools ──
+
+fuji_full_dev_check:
+	@cd $(CONTRACTS_DIR) && forge clean
+	@cd $(CONTRACTS_DIR) && forge script script/DeployFujiFullDev.s.sol:DeployFujiFullDev \
+		--rpc-url $(FUJI_RPC_URL) \
+		--private-key $(PRIVATE_KEY) -vv
+
+fuji_full_dev_deploy:
+	@cd $(CONTRACTS_DIR) && forge clean
+	@cd $(CONTRACTS_DIR) && forge script script/DeployFujiFullDev.s.sol:DeployFujiFullDev \
+		--rpc-url $(FUJI_RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		--broadcast --verify --slow \
+		--verifier-url "https://api.avascan.info/v2/network/testnet/evm/43113/etherscan" \
+		--etherscan-api-key $(SNOWTRACE_API_KEY) -vv
+
 # ── Mainnet deployment ──────────────────────────
 
 mainnet_check:

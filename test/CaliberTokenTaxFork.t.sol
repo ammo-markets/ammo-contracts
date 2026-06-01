@@ -6,10 +6,10 @@ import "../src/AmmoLiquidityManager.sol";
 import "../src/AmmoManager.sol";
 import "../src/CaliberToken.sol";
 import "../src/CaliberMarket.sol";
+import "../src/interfaces/ICaliberMarket.sol";
 import {IDexRouter} from "../src/interfaces/IDexRouter.sol";
-import {IERC20} from "../src/interfaces/IERC20.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./MockERC20.sol";
-import "./MockEmissionController.sol";
 import "./MockPriceOracle.sol";
 
 interface IPairFactoryFork {
@@ -36,6 +36,7 @@ contract CaliberTokenTaxForkTest is Test {
     address constant PAIR_FACTORY = 0x85448bF2F589ab1F56225DF5167c63f57758f8c1;
     address constant DEX_ROUTER = 0x9CEE04bDcE127DA7E448A333f006DEFb3d5e38cC;
 
+    uint64 constant MIN_MINT_DEADLINE = 24 hours;
     uint256 constant BUY_TAX = 300;
     uint256 constant SELL_TAX = 300;
 
@@ -44,7 +45,6 @@ contract CaliberTokenTaxForkTest is Test {
     CaliberToken token;
     AmmoLiquidityManager liquidityManager;
     MockERC20 usdc;
-    MockEmissionController emissionController;
     MockPriceOracle oracle;
 
     address wavax;
@@ -72,7 +72,6 @@ contract CaliberTokenTaxForkTest is Test {
 
         usdc = new MockERC20("USD Coin", "USDC", 6);
         oracle = new MockPriceOracle(21e16);
-        emissionController = new MockEmissionController(address(new MockERC20("Protocol", "AMMO", 18)));
 
         manager = new AmmoManager(feeRecipient, wavax);
         manager.setTreasury(treasury);
@@ -82,12 +81,11 @@ contract CaliberTokenTaxForkTest is Test {
         manager.setTaxExempt(address(liquidityManager), true);
 
         market = new CaliberMarket(
-            CaliberMarket.MarketConfig({
+            ICaliberMarket.MarketConfig({
                 manager: address(manager),
                 usdc: address(usdc),
                 usdcDecimals: 6,
                 oracle: address(oracle),
-                emissionController: address(emissionController),
                 caliberId: bytes32("9MM_TEST"),
                 tokenName: "Ammo 9MM",
                 tokenSymbol: "9MM-T",
@@ -169,10 +167,10 @@ contract CaliberTokenTaxForkTest is Test {
         vm.deal(user, 1 ether);
         vm.startPrank(user);
         token.approve(DEX_ROUTER, amount);
-        (uint256 amountToken, uint256 amountETH, uint256 liquidity) =
-            IDexRouter(DEX_ROUTER).addLiquidityETH{value: 1 ether}(
-                address(token), false, amount, 0, 0, user, block.timestamp
-            );
+        (uint256 amountToken, uint256 amountETH, uint256 liquidity) = IDexRouter(DEX_ROUTER)
+        .addLiquidityETH{value: 1 ether}(
+            address(token), false, amount, 0, 0, user, block.timestamp
+        );
         vm.stopPrank();
 
         assertEq(amountToken, amount, "router reports gross AMMO amount used");
@@ -201,9 +199,8 @@ contract CaliberTokenTaxForkTest is Test {
         vm.startPrank(user);
         token.approve(DEX_ROUTER, sellAmount);
         IDexRouter.route[] memory sellRoutes = _route(address(token), wavax);
-        IDexRouter(DEX_ROUTER).swapExactTokensForETHSupportingFeeOnTransferTokens(
-            sellAmount, 0, sellRoutes, user, block.timestamp
-        );
+        IDexRouter(DEX_ROUTER)
+            .swapExactTokensForETHSupportingFeeOnTransferTokens(sellAmount, 0, sellRoutes, user, block.timestamp);
         vm.stopPrank();
 
         uint256 userTokenSpent = userTokenBefore - token.balanceOf(user);
@@ -263,9 +260,8 @@ contract CaliberTokenTaxForkTest is Test {
         // 3. Remove all of the user's liquidity via the helper.
         vm.startPrank(user);
         IERC20(pair).approve(address(liquidityManager), liquidity);
-        (uint256 returnedToken, uint256 returnedAVAX) = liquidityManager.removeLiquidityETH(
-            address(token), false, liquidity, 0, 0, user, block.timestamp
-        );
+        (uint256 returnedToken, uint256 returnedAVAX) =
+            liquidityManager.removeLiquidityETH(address(token), false, liquidity, 0, 0, user, block.timestamp);
         vm.stopPrank();
 
         // 4. Assertions: LP burned, no tax collected, exact AMMO + native AVAX delivered.
@@ -280,9 +276,7 @@ contract CaliberTokenTaxForkTest is Test {
         assertEq(token.balanceOf(address(liquidityManager)), 0, "helper drained of AMMO");
         assertEq(IERC20(wavax).balanceOf(address(liquidityManager)), 0, "helper drained of WAVAX");
         assertEq(address(liquidityManager).balance, 0, "helper drained of native AVAX");
-        assertEq(
-            IERC20(pair).allowance(address(liquidityManager), DEX_ROUTER), 0, "helper's LP approval reset to zero"
-        );
+        assertEq(IERC20(pair).allowance(address(liquidityManager), DEX_ROUTER), 0, "helper's LP approval reset to zero");
     }
 
     function testForkDirectPharaohRemoveLiquidityETHRevertsWhenAmmoLegIsTaxed() public {
@@ -296,9 +290,7 @@ contract CaliberTokenTaxForkTest is Test {
 
         IERC20(pair).approve(DEX_ROUTER, liquidity);
         vm.expectRevert();
-        IPharaohRouterFork(DEX_ROUTER).removeLiquidityETH(
-            address(token), false, liquidity, 0, 0, user, block.timestamp
-        );
+        IPharaohRouterFork(DEX_ROUTER).removeLiquidityETH(address(token), false, liquidity, 0, 0, user, block.timestamp);
         vm.stopPrank();
     }
 
@@ -323,9 +315,14 @@ contract CaliberTokenTaxForkTest is Test {
         usdc.mint(who, usdcAmount);
         vm.startPrank(who);
         usdc.approve(address(market), usdcAmount);
-        uint256 orderId = market.startMint(usdcAmount, 0);
+        uint256 orderId = market.startMint(usdcAmount, _deadline());
         vm.stopPrank();
+        market.processMint(orderId);
         market.finalizeMint(orderId);
+    }
+
+    function _deadline() internal view returns (uint64) {
+        return uint64(block.timestamp + MIN_MINT_DEADLINE + 1);
     }
 
     function _route(address from, address to) internal pure returns (IDexRouter.route[] memory routes) {
